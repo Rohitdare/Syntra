@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "NO_TEXT",
+    "message": "No readable text found. If this is a scanned PDF, paste the text instead.",
+    "requestId": "req_01j7x4z5k8m2n3p4q5r6s7t8u9",
+    "retryable": false,
+    "retryAfterSeconds": null
+  }
+}

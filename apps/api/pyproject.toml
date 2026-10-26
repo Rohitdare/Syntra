@@ -1,0 +1,70 @@
+[project]
+name = "research-desk-api"
+version = "0.1.0"
+description = "FastAPI backend for Research Desk multi-agent research assistant"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/research_desk"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "TID",  # flake8-tidy-imports (banned-api rule TID251)
+]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"qdrant_client".msg = "Module boundary violation: only stores/vector.py may import qdrant_client."
+"google.genai".msg = "Module boundary violation: only providers/gemini.py may import the Gemini SDK."
+"google.generativeai".msg = "Module boundary violation: only providers/gemini.py may import the Gemini SDK."
+"sqlalchemy".msg = "Module boundary violation: only stores/ and stores/repos/ may import sqlalchemy."
+
+[tool.ruff.lint.per-file-ignores]
+"src/research_desk/stores/vector.py" = ["TID251"]
+"src/research_desk/providers/gemini.py" = ["TID251"]
+"src/research_desk/stores/db.py" = ["TID251"]
+"src/research_desk/stores/repos/*.py" = ["TID251"]
+"tests/**/*.py" = ["TID251"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]

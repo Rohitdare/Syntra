@@ -47,7 +47,7 @@ One backend process runs all four agents in v1. Interfaces for a job runner, rat
 ## Tech stack
 
 - **Frontend:** Next.js (App Router), React, TypeScript, Tailwind CSS, Zod, Vitest, npm
-- **Backend:** Python, FastAPI, Pydantic, Pytest, uv
+- **Backend:** Python 3.12, FastAPI, Pydantic, Pytest, venv, pip
 - **AI:** Google Gemini API (key from Google AI Studio): Flash-class models for the agents and `gemini-embedding-001` for embeddings, behind `providers/llm.py` and `providers/embeddings.py`
 - **Vector database:** Qdrant (local Docker or a cloud cluster) behind `stores/vector.py`
 - **Application database:** PostgreSQL behind repositories, with Alembic migrations
@@ -59,7 +59,7 @@ Development and the demo target free tiers where they exist; see `docs/02-DESIGN
 
 ## Getting started
 
-Prerequisites: Node 20+, Python (version to be confirmed; 3.12+ assumed), [uv](https://docs.astral.sh/uv/), Docker with Compose, and a Gemini API key from Google AI Studio.
+Prerequisites: Node 20+, Python 3.12, Docker with Compose, and a Gemini API key from Google AI Studio.
 
 Target commands (available after Stage 0 and Stage 1; until then see `docs/06-ANTIGRAVITY-INSTRUCTIONS.md`):
 
@@ -168,7 +168,7 @@ apps/
     src/lib/                   # api client, ndjson reader, runner, trace store, zod schemas, config
     tests/                     # Vitest
   api/                         # FastAPI backend
-    pyproject.toml uv.lock     # uv-managed dependencies
+    pyproject.toml requirements.txt requirements-dev.txt # pip dependencies
     alembic/                   # PostgreSQL migrations
     src/research_desk/
       main.py                  # app factory

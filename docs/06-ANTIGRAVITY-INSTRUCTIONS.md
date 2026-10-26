@@ -260,7 +260,7 @@ Manual check: 5 consecutive full runs on the demo corpus succeed (metric M1 in t
 STAGE 8: Ship.
 Ask me which hosts to use for the web app, the API, PostgreSQL and Qdrant if I have not said (decision U2). Do not assume any provider limit or free-tier behavior: verify
 each in the provider's documentation and tell me what you could not verify.
-1) API container: apps/api/Dockerfile (non-root user, no secrets baked in, uv-based install, one uvicorn worker). Release step that runs alembic upgrade head (separately from
+1) API container: apps/api/Dockerfile (non-root user, no secrets baked in, pip-based install, one uvicorn worker). Release step that runs alembic upgrade head (separately from
    app start) and scripts/migrate_qdrant.py. Web build and deployment config with NEXT_PUBLIC_API_BASE_URL.
 2) Verify on the real hosts: env vars, CORS origins, upload size limits, streaming responses with heartbeats and idle timeouts (spike S9 on the real stack), graceful shutdown
    behavior on deploy (INTERRUPTED jobs are retryable), TLS to PostgreSQL.

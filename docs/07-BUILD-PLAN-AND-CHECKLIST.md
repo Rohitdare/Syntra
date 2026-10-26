@@ -5,7 +5,7 @@ Version 0.3 | No external deadline. The plan is written in "Day N" units (about 
 ## 1. Day-by-day plan
 
 ### Day 1: Stage 0 (scaffold, tooling, config)
-- [ ] Install prerequisites: Node 20+, Python (confirm version), uv, Docker with Compose
+- [ ] Install prerequisites: Node 20+, Python 3.12, Docker with Compose
 - [ ] Create the Gemini API key in AI Studio; note real rate limits for the fast LLM, strong LLM and embedding models; copy exact model IDs
 - [ ] Create the GitHub repo (public), add `AGENTS.md`, `GEMINI.md`, `README.md`, `docs/`, `.gitignore`
 - [ ] Stage 0: monorepo, `docker-compose.yml` (postgres, qdrant), `apps/api` and `apps/web` skeletons, config, logging, error envelope, `contracts/`, boundary lint rule, CI

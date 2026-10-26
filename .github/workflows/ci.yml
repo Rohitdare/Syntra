@@ -17,29 +17,29 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          version: "latest"
-          enable-cache: true
-
       - name: Set up Python 3.12
-        run: uv python install 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: apps/api/requirements-dev.txt
 
       - name: Install backend dependencies
-        run: uv sync
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
 
       - name: Lint with Ruff
-        run: uv run ruff check .
+        run: python -m ruff check .
 
       - name: Check formatting with Ruff
-        run: uv run ruff format --check .
+        run: python -m ruff format --check .
 
       - name: Type check with mypy
-        run: uv run mypy src
+        run: python -m mypy src
 
       - name: Run backend tests with Pytest
-        run: uv run pytest
+        run: python -m pytest
 
   web:
     name: Frontend (apps/web)

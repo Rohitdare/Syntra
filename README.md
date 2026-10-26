@@ -71,11 +71,14 @@ docker compose up -d postgres qdrant
 # 2. backend
 cd apps/api
 cp .env.example .env                          # then fill in the values
-uv sync
-uv run alembic upgrade head                   # PostgreSQL schema (Stage 1)
-uv run python scripts/migrate_qdrant.py       # Qdrant collection, indexes, alias (Stage 1)
-uv run python scripts/spike_db.py             # one-time check of databases + embeddings (Stage 1)
-uv run uvicorn research_desk.main:app --reload --port 8000
+python -m venv .venv                          # create virtual environment
+# Windows (PowerShell): .\.venv\Scripts\Activate.ps1  |  macOS/Linux: source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
+python -m alembic upgrade head                   # PostgreSQL schema (Stage 1)
+python scripts/migrate_qdrant.py                 # Qdrant collection, indexes, alias (Stage 1)
+python scripts/spike_db.py                       # one-time check of databases + embeddings (Stage 1)
+python -m uvicorn research_desk.main:app --reload --port 8000
 
 # 3. frontend (new terminal)
 cd apps/web
@@ -146,11 +149,11 @@ Never commit `.env`, `.env.local` or any file with real values. Only the `.env.e
 
 | Where | Command | Purpose |
 |---|---|---|
-| `apps/api` | `uv run uvicorn research_desk.main:app --reload --port 8000` | run the API |
-| `apps/api` | `uv run ruff check . && uv run ruff format --check .` | lint and format check |
-| `apps/api` | `uv run mypy src` | type check (checker choice is an assumption, U11) |
-| `apps/api` | `uv run pytest` | backend tests (integration tests need `docker compose up -d postgres qdrant`) |
-| `apps/api` | `uv run alembic upgrade head` | apply PostgreSQL migrations |
+| `apps/api` | `python -m uvicorn research_desk.main:app --reload --port 8000` | run the API |
+| `apps/api` | `python -m ruff check . && python -m ruff format --check .` | lint and format check |
+| `apps/api` | `python -m mypy src` | type check (checker choice is an assumption, U11) |
+| `apps/api` | `python -m pytest` | backend tests (integration tests need `docker compose up -d postgres qdrant`) |
+| `apps/api` | `python -m alembic upgrade head` | apply PostgreSQL migrations |
 | `apps/web` | `npm run dev` | run the frontend |
 | `apps/web` | `npm run typecheck` / `npm run lint` / `npm test` | frontend checks (Vitest) |
 | repository root | `docker compose up -d postgres qdrant` | start local data services |

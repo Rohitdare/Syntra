@@ -37,7 +37,7 @@ v1 is a modular monolith: ONE API instance, ONE uvicorn worker, in-process job r
 
 ## 3. Stack
 
-Frontend: Next.js App Router, React, TypeScript strict, Tailwind, Zod, Vitest, npm. Backend: Python (3.12+ assumed, U11), FastAPI, Pydantic, SQLAlchemy 2 async with Alembic (U18), `qdrant-client`, the official Google Gen AI SDK for Python (confirm the package name in the Gemini docs; exact model IDs come from env), maintained libraries for PDF text extraction (chosen in spike S8) and article extraction, httpx, Pytest, Ruff, mypy, uv. Infrastructure: Docker Compose locally.
+Frontend: Next.js App Router, React, TypeScript strict, Tailwind, Zod, Vitest, npm. Backend: Python 3.12, FastAPI, Pydantic, SQLAlchemy 2 async with Alembic (U18), `qdrant-client`, the official Google Gen AI SDK for Python (confirm the package name in the Gemini docs; exact model IDs come from env), maintained libraries for PDF text extraction (chosen in spike S8) and article extraction, httpx, Pytest, Ruff, mypy, venv, pip. Infrastructure: Docker Compose locally.
 
 ## 4. Data model (details: docs/03)
 
@@ -81,7 +81,7 @@ Never hardcode keys or URLs with credentials. Never read, print or paste `.env*`
 
 ## 8. Code conventions
 
-- Backend commands (from `apps/api`): `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy src`, `uv run pytest`, `uv run alembic upgrade head`. Frontend commands (from `apps/web`): `npm run dev`, `npm run typecheck`, `npm run lint`, `npm test`. Run all checks for the area you changed before finishing any task and fix failures.
+- Backend commands (from `apps/api`): `python -m ruff check .`, `python -m ruff format --check .`, `python -m mypy src`, `python -m pytest`, `python -m alembic upgrade head`. Frontend commands (from `apps/web`): `npm run dev`, `npm run typecheck`, `npm run lint`, `npm test`. Run all checks for the area you changed before finishing any task and fix failures.
 - Folders: see README.md "Project structure".
 - Python: type hints everywhere, `async def` for I/O, Pydantic for boundaries, small functions, clear names, comments only where intent is not obvious. TypeScript strict, no `any` (use `unknown` plus Zod).
 - Unit-test pure logic (chunking, cleaning, IDs, schemas, embedding batching, citation validator, SSRF guard, rate limiter, job state machine). Test the stores against Docker Compose PostgreSQL and Qdrant with a throwaway database and collection. Agent tests use fake providers. Contract fixtures in `contracts/` are validated by both Pytest and Vitest.

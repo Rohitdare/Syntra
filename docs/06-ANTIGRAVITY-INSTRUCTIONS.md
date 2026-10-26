@@ -7,7 +7,7 @@ Version 0.3 | How to use: put the whole `docs/` folder plus the root `README.md`
 ```
 You are helping me build "Research Desk", a multi-agent research assistant (solo portfolio project, free-first).
 Stack: Next.js + React + TypeScript + Tailwind (apps/web); Python + FastAPI (apps/api); Gemini API; Qdrant; PostgreSQL;
-Pydantic (backend) and Zod (frontend); Pytest and Vitest; uv and npm; Docker Compose.
+Pydantic (backend) and Zod (frontend); Pytest and Vitest; venv/pip and npm; Docker Compose.
 
 Before writing code, read these files fully: README.md and docs/01-PRD.md through docs/05-API-SPEC.md.
 They are the source of truth. If code and docs disagree, tell me and propose which to change.
@@ -28,7 +28,7 @@ Rules:
 7. Every route except GET /api/health needs authentication; project routes use get_owned_project; other users' data is 404.
 8. Do not block the event loop: CPU-bound work goes to a thread or subprocess with a timeout.
 9. After each stage run all checks for the area you changed:
-   backend (apps/api): uv run ruff check . ; uv run ruff format --check . ; uv run mypy src ; uv run pytest
+   backend (apps/api): python -m ruff check . ; python -m ruff format --check . ; python -m mypy src ; python -m pytest
    frontend (apps/web): npm run typecheck ; npm run lint ; npm test
    Fix failures before finishing.
 10. Keep code small and readable: short functions, clear names, comments only where intent is not obvious.
@@ -61,7 +61,7 @@ Read README.md, docs/02-DESIGN-DOC.md sections 4, 7, 9, 11, 12, 13.10 and docs/0
    volumes, healthchecks, ports bound to 127.0.0.1, credentials from .env). Do NOT add api/web services yet unless trivial;
    if added, put them behind a compose profile named "full". Confirm image names and healthcheck commands in the official docs.
 
-2) apps/api. Initialize with uv (pyproject.toml, uv.lock). Python version: confirm with me; assume 3.12+.
+2) apps/api. Initialize with standard venv and pip (pyproject.toml, requirements.txt, requirements-dev.txt). Python version: 3.12 (see .python-version).
    Dependencies for THIS stage only: fastapi, uvicorn, pydantic, pydantic-settings, and dev tools pytest, pytest-asyncio
    (or the anyio pytest plugin), httpx (test client), ruff, mypy. Do not add database, Qdrant, Gemini, PDF or SQLAlchemy
    packages yet (Stage 1 and 2 add them).
@@ -94,13 +94,13 @@ Read README.md, docs/02-DESIGN-DOC.md sections 4, 7, 9, 11, 12, 13.10 and docs/0
 
 5) .env.example files: apps/api/.env.example and apps/web/.env.example exactly as README.md lists them (empty values).
 
-6) CI: .github/workflows/ci.yml with two jobs. api: install uv, uv sync, ruff check, ruff format --check, mypy, pytest.
+6) CI: .github/workflows/ci.yml with two jobs. api: setup Python 3.12, pip install -r requirements-dev.txt, ruff check, ruff format --check, mypy, pytest.
    web: setup Node 20, npm ci, typecheck, lint, test. No service containers yet (Stage 1 adds them). Pin action versions;
    confirm current versions in their docs.
 
 7) Update AGENTS.md status (tick stage 0) and README.md only if a command differs from what is written.
 
-Manual check: docker compose up -d postgres qdrant shows both healthy; from apps/api: uv run uvicorn research_desk.main:app
+Manual check: docker compose up -d postgres qdrant shows both healthy; from apps/api: python -m uvicorn research_desk.main:app
 --port 8000 and curl http://localhost:8000/api/health returns booleans with no secrets; a bad config (missing required variable)
 prints a readable list and exits; from apps/web: npm run dev shows the home page reaching the API; all check commands in
 operating rule 9 pass; the CI workflow file passes a local lint of its syntax (or run it on a branch).

@@ -405,7 +405,7 @@ Frontend and backend deploy independently. The API is a container image; the fro
 |---|---|---|---|
 | `postgres` | official PostgreSQL image | 5432 | named volume; healthcheck; credentials from `.env` |
 | `qdrant` | official Qdrant image | 6333 (HTTP), 6334 (gRPC if used) | named volume; healthcheck |
-| `api` (profile `full`) | `apps/api/Dockerfile` | 8000 | runs migrations first via a one-shot command; optional, since day-to-day development runs the API with `uv run uvicorn` |
+| `api` (profile `full`) | `apps/api/Dockerfile` | 8000 | runs migrations first via a one-shot command; optional, since day-to-day development runs the API with `python -m uvicorn` |
 | `web` (profile `full`) | `apps/web/Dockerfile` | 3000 | optional, same reason |
 
 Day-to-day: `docker compose up -d postgres qdrant`, run the API and web with their own dev servers.

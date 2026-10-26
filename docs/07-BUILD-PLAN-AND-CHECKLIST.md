@@ -166,7 +166,7 @@ Resume bullet templates (replace the brackets with your real numbers once you ha
 
 ### 7a. Stage 0 acceptance (foundation for implementation)
 - [ ] `docker compose up -d postgres qdrant` starts both with passing healthchecks; ports bound to 127.0.0.1
-- [ ] `apps/api`: `uv sync` works from a clean checkout; the API starts; `GET /api/health` returns booleans and no secret values
+- [ ] `apps/api`: `pip install -r requirements-dev.txt` works from a clean checkout; the API starts; `GET /api/health` returns booleans and no secret values
 - [ ] A missing required setting prints a readable list and exits; `AUTH_MODE=dev` with `APP_ENV` other than `local` is refused
 - [ ] Error envelope and request IDs work for a validation error and an unexpected error; no stack trace in responses
 - [ ] Module boundary rule is active and fails when a forbidden import is added

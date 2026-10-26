@@ -38,7 +38,7 @@ When you read several papers or articles on one topic, two things are hard: reme
 ## 5. Constraints
 
 - **Free-first:** development and the public demo target free tiers where they exist: local Docker for PostgreSQL and Qdrant, Gemini API free tier (LLM and embeddings), and free host tiers if a suitable one exists. Design for the limits (caps, batching, caching). (changed in 0.3: the architecture now needs a host for a long-running Python API and a PostgreSQL database. Free-tier availability and limits for those are NOT verified; see open question 4 and `02-DESIGN-DOC.md` section 16.)
-- Stack is fixed: Next.js, React, TypeScript and Tailwind for the frontend; Python and FastAPI for the backend; Gemini API for LLM and embeddings; Qdrant for vectors; PostgreSQL for application data; Pydantic and Zod for validation; npm and uv for dependencies; Docker Compose for local development. (new in 0.3)
+- Stack is fixed: Next.js, React, TypeScript and Tailwind for the frontend; Python and FastAPI for the backend; Gemini API for LLM and embeddings; Qdrant for vectors; PostgreSQL for application data; Pydantic and Zod for validation; npm (frontend) and standard venv/pip (backend) for dependencies; Docker Compose for local development. (new in 0.3)
 - Solo build, no fixed external deadline. Suggested target for v1: about 13 working days at 5-6 hours per day (estimate; re-baseline after Stage 1). (changed in 0.3: was about 10 days; PostgreSQL, authentication, jobs and security hardening add work.)
 - Public GitHub repository intended as a portfolio piece.
 

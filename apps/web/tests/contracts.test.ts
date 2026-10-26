@@ -10,9 +10,9 @@ describe("Contracts validation", () => {
     const parsed = HealthResponseSchema.parse(content);
 
     expect(parsed.ok).toBe(true);
-    expect(parsed.configured.gemini).toBe(true);
-    expect(parsed.configured.postgres).toBe(true);
-    expect(parsed.configured.qdrant).toBe(true);
+    expect(parsed.configured?.gemini).toBe(true);
+    expect(parsed.configured?.postgres).toBe(true);
+    expect(parsed.configured?.qdrant).toBe(true);
   });
 
   it("validates error.json fixture", () => {

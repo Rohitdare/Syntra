@@ -72,10 +72,13 @@ class AppError(Exception):
         status_code: int | None = None,
         retryable: bool = False,
         retry_after_seconds: int | None = None,
+        http_status: int | None = None,
     ) -> None:
         self.code = code
         self.message = message or ERROR_MESSAGES.get(code, "An error occurred.")
-        self.status_code = status_code or HTTP_STATUS_MAP.get(code, status.HTTP_400_BAD_REQUEST)
+        sc = status_code or http_status or HTTP_STATUS_MAP.get(code, status.HTTP_400_BAD_REQUEST)
+        self.status_code = sc
+        self.http_status = sc
         self.retryable = retryable
         self.retry_after_seconds = retry_after_seconds
         super().__init__(self.message)

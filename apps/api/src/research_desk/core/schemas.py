@@ -22,11 +22,19 @@ class HealthConfigured(CamelModel):
     qdrant: bool
 
 
+class HealthDbStatus(CamelModel):
+    """Database connectivity status for readiness probe."""
+
+    postgres: str
+    qdrant: str
+
+
 class HealthResponse(CamelModel):
     """Health check endpoint response envelope."""
 
     ok: bool
-    configured: HealthConfigured
+    configured: HealthConfigured | None = None
+    db: HealthDbStatus | None = None
 
 
 class ErrorDetail(CamelModel):

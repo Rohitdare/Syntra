@@ -34,10 +34,13 @@ async def test_health_endpoint_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_health_endpoint_db_option_not_implemented() -> None:
+async def test_health_endpoint_db_option_implemented() -> None:
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/health?db=1")
-        assert response.status_code == 501
+        # In test environment without running services, returns 503 with db status
+        assert response.status_code in (200, 503)
         data = response.json()
-        assert data["error"]["code"] == "NOT_IMPLEMENTED"
+        assert "db" in data
+        assert "postgres" in data["db"]
+        assert "qdrant" in data["db"]

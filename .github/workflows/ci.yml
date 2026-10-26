@@ -10,9 +10,36 @@ jobs:
   api:
     name: Backend (apps/api)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: research_desk
+          POSTGRES_PASSWORD: devpassword
+          POSTGRES_DB: research_desk
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      qdrant:
+        image: qdrant/qdrant:v1.12.0
+        ports:
+          - 6333:6333
+
+    env:
+      DATABASE_URL: postgresql://research_desk:devpassword@localhost:5432/research_desk
+      QDRANT_URL: http://localhost:6333
+      GEMINI_API_KEY: mock-api-key-for-ci
+      APP_ENV: local
+      AUTH_MODE: dev
     defaults:
       run:
         working-directory: apps/api
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -37,6 +64,12 @@ jobs:
 
       - name: Type check with mypy
         run: python -m mypy src
+
+      - name: Run Alembic migrations on empty database
+        run: python -m alembic upgrade head
+
+      - name: Initialize Qdrant collection
+        run: python scripts/migrate_qdrant.py
 
       - name: Run backend tests with Pytest
         run: python -m pytest

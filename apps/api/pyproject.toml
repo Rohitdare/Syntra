@@ -9,6 +9,12 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.6.0",
+    "sqlalchemy>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "qdrant-client>=1.12.0",
+    "google-genai>=0.1.1",
+    "greenlet>=3.1.0",
 ]
 
 [project.optional-dependencies]
@@ -49,8 +55,10 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "src/research_desk/stores/vector.py" = ["TID251"]
 "src/research_desk/providers/gemini.py" = ["TID251"]
-"src/research_desk/stores/db.py" = ["TID251"]
+"src/research_desk/stores/*.py" = ["TID251"]
 "src/research_desk/stores/repos/*.py" = ["TID251"]
+"alembic/**/*.py" = ["TID251"]
+"scripts/*.py" = ["TID251"]
 "tests/**/*.py" = ["TID251"]
 
 [tool.mypy]

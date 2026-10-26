@@ -82,19 +82,19 @@ export default function Home() {
                 <div className="p-2 rounded bg-slate-900 border border-slate-800 text-center">
                   <div className="text-[11px] text-slate-400">Gemini</div>
                   <div className="text-xs font-semibold text-slate-300">
-                    {health.data.configured.gemini ? "Configured" : "Unset"}
+                    {health.data.configured?.gemini ? "Configured" : "Unset"}
                   </div>
                 </div>
                 <div className="p-2 rounded bg-slate-900 border border-slate-800 text-center">
                   <div className="text-[11px] text-slate-400">PostgreSQL</div>
                   <div className="text-xs font-semibold text-slate-300">
-                    {health.data.configured.postgres ? "Configured" : "Unset"}
+                    {health.data.configured?.postgres ? "Configured" : "Unset"}
                   </div>
                 </div>
                 <div className="p-2 rounded bg-slate-900 border border-slate-800 text-center">
                   <div className="text-[11px] text-slate-400">Qdrant</div>
                   <div className="text-xs font-semibold text-slate-300">
-                    {health.data.configured.qdrant ? "Configured" : "Unset"}
+                    {health.data.configured?.qdrant ? "Configured" : "Unset"}
                   </div>
                 </div>
               </div>

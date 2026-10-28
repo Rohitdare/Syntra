@@ -24,7 +24,7 @@ from research_desk.main import create_app
 from research_desk.orchestrator.events import EventMessage, EventSink
 from research_desk.orchestrator.pipeline import PipelineOrchestrator
 from research_desk.stores.db import get_db
-from research_desk.stores.models import Job, Project, Source, User
+from research_desk.stores.models import Claim, Job, Project, Source, User
 from research_desk.stores.vector import VectorStore
 
 
@@ -407,10 +407,25 @@ async def test_get_source_detail_success(test_user: User, test_project: Project)
     app.dependency_overrides[get_db] = lambda: mock_session
     app.dependency_overrides[get_owned_project] = lambda: test_project
 
+    mock_claim = Claim(
+        project_id=test_project.id,
+        source_id="src_detail01",
+        id="clm_detail01_01",
+        claim_index=0,
+        text="Transformer models scale efficiently with compute.",
+        importance=5,
+        page_hint=2,
+        created_at=datetime.datetime(2026, 3, 15, 10, 0, 0, tzinfo=datetime.timezone.utc),
+    )
+
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
             "research_desk.api.routes.sources.SourceRepo.get",
             AsyncMock(return_value=source),
+        )
+        mp.setattr(
+            "research_desk.api.routes.sources.ClaimRepo.list_by_source",
+            AsyncMock(return_value=[mock_claim]),
         )
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -422,6 +437,11 @@ async def test_get_source_detail_success(test_user: User, test_project: Project)
     assert data["source"]["tag"] == "S1"
     assert data["summary"] == "Overview of deep learning architectures"
     assert data["source"]["stages"]["critiqued"] is True
+    assert len(data["claims"]) == 1
+    assert data["claims"][0]["id"] == "clm_detail01_01"
+    assert data["claims"][0]["text"] == "Transformer models scale efficiently with compute."
+    assert data["claims"][0]["importance"] == 5
+    assert data["claims"][0]["pageHint"] == 2
 
 
 @pytest.mark.asyncio

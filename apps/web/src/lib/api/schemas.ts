@@ -98,11 +98,26 @@ export const DeleteSourceResponseSchema = z.object({
   deleted: z.boolean(),
 });
 
+export const ClaimItemSchema = z.object({
+  id: z.string(),
+  sourceId: z.string(),
+  claimIndex: z.number(),
+  text: z.string(),
+  importance: z.number(),
+  pageHint: z.number().nullable().optional(),
+  createdAt: z.string().nullable().optional(),
+});
+
 export const SourceDetailResponseSchema = z.object({
   source: ProjectSourceItemSchema,
   summary: z.string().nullable().optional(),
-  claims: z.array(z.record(z.string(), z.unknown())).default([]),
+  claims: z.array(ClaimItemSchema).default([]),
   verdicts: z.array(z.record(z.string(), z.unknown())).default([]),
+});
+
+export const AnalystResultSchema = z.object({
+  claimCount: z.number(),
+  topics: z.array(z.string()),
 });
 
 export const JobStatusResponseSchema = z.object({
@@ -140,6 +155,8 @@ export type ProjectDetailResponse = z.infer<typeof ProjectDetailResponseSchema>;
 export type ProjectSourceItem = z.infer<typeof ProjectSourceItemSchema>;
 export type DeleteProjectResponse = z.infer<typeof DeleteProjectResponseSchema>;
 export type DeleteSourceResponse = z.infer<typeof DeleteSourceResponseSchema>;
+export type ClaimItem = z.infer<typeof ClaimItemSchema>;
 export type SourceDetailResponse = z.infer<typeof SourceDetailResponseSchema>;
+export type AnalystResult = z.infer<typeof AnalystResultSchema>;
 export type JobStatusResponse = z.infer<typeof JobStatusResponseSchema>;
 export type StreamEvent = z.infer<typeof StreamEventSchema>;

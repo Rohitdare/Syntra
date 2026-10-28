@@ -136,6 +136,7 @@ class SourceRepo:
         summary: str | None = None,
         topics: list[str] | None = None,
         last_error: str | None = None,
+        title: str | None = None,
     ) -> None:
         """Update stage completion booleans and derived counts."""
         stmt = select(Source).where(
@@ -161,6 +162,8 @@ class SourceRepo:
                 source.topics = topics
             if last_error is not None:
                 source.last_error = last_error
+            if title is not None:
+                source.title = title
             await self.session.flush()
 
     async def delete(self, project_id: str, source_id: str) -> None:

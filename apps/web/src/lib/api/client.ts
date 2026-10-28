@@ -14,8 +14,12 @@ import {
   DeleteProjectResponse,
   DeleteSourceResponseSchema,
   DeleteSourceResponse,
+  ClaimItemSchema,
+  ClaimItem,
   SourceDetailResponseSchema,
   SourceDetailResponse,
+  AnalystResultSchema,
+  AnalystResult,
   JobStatusResponseSchema,
   JobStatusResponse,
   StreamEventSchema,
@@ -28,10 +32,13 @@ export type {
   ProjectSourceItem,
   DeleteProjectResponse,
   DeleteSourceResponse,
+  ClaimItem,
   SourceDetailResponse,
+  AnalystResult,
   JobStatusResponse,
   StreamEvent,
 };
+export { ClaimItemSchema, AnalystResultSchema };
 
 export class ApiClientError extends Error {
   code: string;

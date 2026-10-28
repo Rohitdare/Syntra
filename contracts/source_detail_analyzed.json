@@ -1,0 +1,39 @@
+{
+  "source": {
+    "id": "src_4f1b2c3d",
+    "tag": "S1",
+    "kind": "pdf",
+    "title": "Empirical Evaluation of Multi-Agent Research Systems",
+    "origin": "paper.pdf",
+    "chunkCount": 24,
+    "claimCount": 2,
+    "stages": {
+      "collected": true,
+      "analyzed": true,
+      "critiqued": false
+    },
+    "lastError": null
+  },
+  "summary": "This empirical study evaluates the consistency and hallucination rates of autonomous research agents operating on multi-source evidence corpora. The authors demonstrate that two-store validation reduces ungrounded claims significantly across benchmark datasets.",
+  "claims": [
+    {
+      "id": "clm_4f1b2c3d_00",
+      "sourceId": "src_4f1b2c3d",
+      "claimIndex": 0,
+      "text": "Two-store validation with PostgreSQL as the system of record reduces claim hallucination by 42% compared to vector-only memory.",
+      "importance": 5,
+      "pageHint": 4,
+      "createdAt": "2026-10-29T00:00:00Z"
+    },
+    {
+      "id": "clm_4f1b2c3d_01",
+      "sourceId": "src_4f1b2c3d",
+      "claimIndex": 1,
+      "text": "Deterministic UUIDv5 vector indexing ensures complete idempotency across repeated pipeline analysis stages.",
+      "importance": 4,
+      "pageHint": 7,
+      "createdAt": "2026-10-29T00:00:00Z"
+    }
+  ],
+  "verdicts": []
+}

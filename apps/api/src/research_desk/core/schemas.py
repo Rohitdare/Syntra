@@ -1,7 +1,7 @@
 import datetime
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from pydantic.alias_generators import to_camel
 
 
@@ -153,13 +153,64 @@ class SourceIngestJsonRequest(CamelModel):
     text: str | None = None
 
 
+class ClaimItem(CamelModel):
+    """Public API representation of an extracted claim."""
+
+    id: str
+    source_id: str
+    claim_index: int
+    text: str
+    importance: int
+    page_hint: int | None = None
+    created_at: datetime.datetime | str | None = None
+
+
 class SourceDetailResponse(CamelModel):
     """Detail view of a source with summary, claims, and verdicts."""
 
     source: ProjectSourceItem
     summary: str | None = None
-    claims: list[dict[str, Any]] = Field(default_factory=list)
+    claims: list[ClaimItem] = Field(default_factory=list)
     verdicts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AnalystClaim(CamelModel):
+    """Atomic claim extracted by the LLM from source text."""
+
+    text: str = Field(min_length=20, max_length=400, description="Atomic, self-contained assertion")
+    importance: int = Field(
+        ge=1, le=5, description="Significance of finding: 5=central, 1=minor detail"
+    )
+    page_hint: int | None = Field(
+        default=None, gt=0, description="Approximate source page if available"
+    )
+
+
+class AnalystOutputSchema(CamelModel):
+    """Structured LLM output schema for Gemini provider validation."""
+
+    title: str = Field(min_length=1, max_length=200, description="Faithful, concise document title")
+    summary: str = Field(
+        min_length=40, max_length=1200, description="3-5 sentence faithful summary"
+    )
+    topics: list[Annotated[str, StringConstraints(max_length=40)]] = Field(
+        min_length=1, max_length=5, description="1-5 high-level research topics"
+    )
+    claims: list[AnalystClaim] = Field(max_length=8, description="At most 8 ranked claims")
+
+
+class AnalystInput(CamelModel):
+    """Input payload to run the Analyst agent."""
+
+    project_id: str
+    source_id: str
+
+
+class AnalystOutput(CamelModel):
+    """Result payload emitted at the conclusion of analysis."""
+
+    claim_count: int
+    topics: list[str]
 
 
 class JobStatusResponse(CamelModel):

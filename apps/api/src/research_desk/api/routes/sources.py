@@ -22,6 +22,7 @@ from research_desk.api.dependencies import (
 from research_desk.core.config import Settings, get_settings
 from research_desk.core.errors import AppError
 from research_desk.core.schemas import (
+    ClaimItem,
     DeleteSourceResponse,
     ProjectSourceItem,
     SourceDetailResponse,
@@ -31,6 +32,7 @@ from research_desk.orchestrator.events import EventSink
 from research_desk.orchestrator.pipeline import PipelineOrchestrator
 from research_desk.stores.db import DbSession, get_db
 from research_desk.stores.models import Project, User
+from research_desk.stores.repos.claims import ClaimRepo
 from research_desk.stores.repos.jobs import JobRepo
 from research_desk.stores.repos.sources import SourceRepo
 from research_desk.stores.vector import VectorStore
@@ -275,6 +277,21 @@ async def get_source(
             retryable=False,
         )
 
+    claim_repo = ClaimRepo(session)
+    claims = await claim_repo.list_by_source(project.id, source_id)
+    claim_items = [
+        ClaimItem(
+            id=c.id,
+            source_id=c.source_id,
+            claim_index=c.claim_index,
+            text=c.text,
+            importance=c.importance,
+            page_hint=c.page_hint,
+            created_at=c.created_at.isoformat() if c.created_at else None,
+        )
+        for c in claims
+    ]
+
     return SourceDetailResponse(
         source=ProjectSourceItem(
             id=source.id,
@@ -292,7 +309,7 @@ async def get_source(
             last_error=source.last_error,
         ),
         summary=source.summary,
-        claims=[],
+        claims=claim_items,
         verdicts=[],
     )
 

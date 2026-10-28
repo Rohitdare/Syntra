@@ -331,7 +331,8 @@ class JobEvent(Base):
     type: Mapped[str] = mapped_column(
         String(20),
         CheckConstraint(
-            "type IN ('status', 'step', 'chunk', 'item', 'result', "
+            "type IN ('stage_start', 'status', 'step', 'chunk', 'item', "
+            "'doc_read', 'doc_write', 'llm_call', 'warning', 'result', "
             "'error', 'heartbeat', 'stage_end')",
             name="ck_job_events_type",
         ),

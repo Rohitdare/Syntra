@@ -1,153 +1,237 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { env } from "@/lib/config";
-import { HealthResponse, HealthResponseSchema } from "@/lib/api/schemas";
+import React, { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { AppShell } from "@/components/layout/AppShell";
+import { CreateProjectModal } from "@/components/projects/CreateProjectModal";
+import { listProjects, ProjectListItem, ApiClientError } from "@/lib/api/client";
 
-type HealthState =
-  | { status: "loading" }
-  | { status: "success"; data: HealthResponse }
-  | { status: "error"; message: string };
+// Re-export fetchHealth for backward compatibility
+export { fetchHealth } from "@/lib/api/client";
 
-export async function fetchHealth(
-  baseUrl: string,
-  signal?: AbortSignal
-): Promise<HealthResponse> {
-  const normalizedBase = baseUrl.replace(/\/+$/, "");
-  const res = await fetch(`${normalizedBase}/api/health`, {
-    headers: {
-      Accept: "application/json",
-    },
-    signal,
-  });
+export default function ResearchDashboard() {
+  const router = useRouter();
 
-  if (!res.ok) {
-    throw new Error(`Server returned HTTP ${res.status}`);
-  }
+  const [projects, setProjects] = useState<ProjectListItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
 
-  const json = await res.json();
-  const parsed = HealthResponseSchema.parse(json);
+  // Manual retry handler
+  const fetchProjects = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await listProjects();
+      setProjects(data);
+    } catch (err: unknown) {
+      if (err instanceof ApiClientError) {
+        setError(`Unable to load research projects (${err.code}): ${err.message}`);
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError("Failed to connect to the research desk backend. Please ensure the API is running.");
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
-  if (!parsed.ok) {
-    throw new Error("Backend reported unhealthy status");
-  }
-
-  return parsed;
-}
-
-export default function Home() {
-  const [health, setHealth] = useState<HealthState>({ status: "loading" });
-
+  // Initial load without synchronous setState in effect body
   useEffect(() => {
     let isMounted = true;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-    async function checkHealth() {
-      try {
-        const data = await fetchHealth(env.NEXT_PUBLIC_API_BASE_URL, controller.signal);
+    listProjects()
+      .then((data) => {
         if (isMounted) {
-          setHealth({ status: "success", data });
+          setProjects(data);
+          setIsLoading(false);
         }
-      } catch (err: unknown) {
+      })
+      .catch((err: unknown) => {
         if (!isMounted) return;
-
-        let msg = "Failed to connect to API server";
-        if (err instanceof Error) {
-          if (err.name === "AbortError") {
-            msg = "Health check timed out after 5 seconds";
-          } else if (err.message.includes("Failed to fetch")) {
-            msg = "Unable to reach API server (network or CORS error)";
-          } else {
-            msg = err.message;
-          }
+        if (err instanceof ApiClientError) {
+          setError(`Unable to load research projects (${err.code}): ${err.message}`);
+        } else if (err instanceof Error) {
+          setError(err.message);
+        } else {
+          setError("Failed to connect to the research desk backend. Please ensure the API is running.");
         }
-        setHealth({ status: "error", message: msg });
-      } finally {
-        clearTimeout(timeoutId);
-      }
-    }
-
-    checkHealth();
+        setIsLoading(false);
+      });
 
     return () => {
       isMounted = false;
-      controller.abort();
-      clearTimeout(timeoutId);
     };
   }, []);
 
+  function handleProjectCreated(projectId: string) {
+    router.push(`/projects/${projectId}`);
+  }
+
+  function formatRelativeDate(isoString: string): string {
+    try {
+      const date = new Date(isoString);
+      if (isNaN(date.getTime())) return "Recently";
+      const now = new Date();
+      const diffMs = now.getTime() - date.getTime();
+      const diffMins = Math.floor(diffMs / (1000 * 60));
+      const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+      if (diffMins < 1) return "Just now";
+      if (diffMins < 60) return `${diffMins}m ago`;
+      if (diffHours < 24) return `${diffHours}h ago`;
+      if (diffDays === 1) return "Yesterday";
+      if (diffDays < 7) return `${diffDays}d ago`;
+      return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    } catch {
+      return "Recently";
+    }
+  }
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-6">
-      <main className="w-full max-w-xl bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl space-y-6">
-        <header className="space-y-2 text-center">
-          <h1 className="text-3xl font-bold tracking-tight text-white">Research Desk</h1>
-          <p className="text-slate-400 text-sm">
-            Multi-agent research assistant &bull; Stage 0 Environment
-          </p>
-        </header>
+    <AppShell breadcrumbs={[{ label: "Research Desk" }]}>
+      <CreateProjectModal
+        isOpen={isCreateOpen}
+        onClose={() => setIsCreateOpen(false)}
+        onSuccess={handleProjectCreated}
+      />
 
-        <section className="bg-slate-950/80 rounded-xl p-6 border border-slate-800/80 space-y-4">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-            System Connectivity
-          </h2>
-
-          <div className="flex items-center justify-between py-2 border-b border-slate-800">
-            <span className="text-sm font-medium text-slate-300">FastAPI Backend</span>
-            {health.status === "loading" && (
-              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-800 text-slate-300 animate-pulse">
-                Checking...
-              </span>
-            )}
-            {health.status === "success" && (
-              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-950 text-emerald-400 border border-emerald-800">
-                &bull; API reachable
-              </span>
-            )}
-            {health.status === "error" && (
-              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-rose-950 text-rose-400 border border-rose-800">
-                &times; API unreachable
-              </span>
-            )}
+      <div className="space-y-8">
+        {/* Hero Header */}
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-[var(--color-border)] pb-6">
+          <div>
+            <span className="text-[11px] font-semibold tracking-wider text-[var(--color-primary)] uppercase font-mono">
+              Research Workspace
+            </span>
+            <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-[var(--color-text-primary)] mt-1">
+              Explore. Compare. Understand.
+            </h1>
+            <p className="text-sm text-[var(--color-text-secondary)] mt-1 max-w-xl">
+              Syntra coordinates AI agents to collect evidence, surface agreement and contradictions, and synthesize grounded research briefs.
+            </p>
           </div>
 
-          {health.status === "error" && (
-            <div className="p-3 bg-rose-950/50 border border-rose-900/50 rounded-lg text-xs text-rose-300">
-              <span className="font-semibold">Connection Error:</span> {health.message}
-            </div>
-          )}
+          <div className="flex items-center space-x-3">
+            <button
+              type="button"
+              onClick={() => setIsCreateOpen(true)}
+              className="inline-flex items-center space-x-2 px-4 py-2 text-xs font-semibold bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white rounded-lg shadow-xs transition-colors"
+            >
+              <span className="text-sm font-bold leading-none">+</span>
+              <span>New Research</span>
+            </button>
+          </div>
+        </div>
 
-          {health.status === "success" && (
-            <div className="space-y-2 pt-2">
-              <p className="text-xs text-slate-400">Service Configuration (Stage 0):</p>
-              <div className="grid grid-cols-3 gap-2">
-                <div className="p-2 rounded bg-slate-900 border border-slate-800 text-center">
-                  <div className="text-[11px] text-slate-400">Gemini</div>
-                  <div className="text-xs font-semibold text-slate-300">
-                    {health.data.configured?.gemini ? "Configured" : "Unset"}
-                  </div>
-                </div>
-                <div className="p-2 rounded bg-slate-900 border border-slate-800 text-center">
-                  <div className="text-[11px] text-slate-400">PostgreSQL</div>
-                  <div className="text-xs font-semibold text-slate-300">
-                    {health.data.configured?.postgres ? "Configured" : "Unset"}
-                  </div>
-                </div>
-                <div className="p-2 rounded bg-slate-900 border border-slate-800 text-center">
-                  <div className="text-[11px] text-slate-400">Qdrant</div>
-                  <div className="text-xs font-semibold text-slate-300">
-                    {health.data.configured?.qdrant ? "Configured" : "Unset"}
-                  </div>
+        {/* Error State with Retry */}
+        {error && (
+          <div
+            className="p-4 bg-[var(--color-error-soft)] border border-[var(--color-error)] rounded-xl text-xs space-y-3"
+            role="alert"
+          >
+            <div className="flex items-center space-x-2 text-[var(--color-error)] font-medium">
+              <span className="text-base">⚠️</span>
+              <span>Backend Connectivity Alert</span>
+            </div>
+            <p className="text-[var(--color-text-secondary)]">{error}</p>
+            <button
+              type="button"
+              onClick={fetchProjects}
+              className="px-3 py-1.5 bg-[var(--color-card)] hover:bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-primary)] rounded-md font-medium text-xs transition-colors"
+            >
+              Retry Connection
+            </button>
+          </div>
+        )}
+
+        {/* Loading Skeletons */}
+        {isLoading && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {[1, 2, 3].map((i) => (
+              <div
+                key={i}
+                className="p-5 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] space-y-3 animate-pulse"
+              >
+                <div className="h-5 bg-[var(--color-surface)] rounded w-3/4" />
+                <div className="h-4 bg-[var(--color-surface)] rounded w-full" />
+                <div className="h-4 bg-[var(--color-surface)] rounded w-1/2" />
+                <div className="pt-4 border-t border-[var(--color-border)] flex justify-between">
+                  <div className="h-4 bg-[var(--color-surface)] rounded w-1/4" />
+                  <div className="h-4 bg-[var(--color-surface)] rounded w-1/4" />
                 </div>
               </div>
-            </div>
-          )}
-        </section>
+            ))}
+          </div>
+        )}
 
-        <footer className="text-center text-xs text-slate-500">
-          Target API: <code className="text-slate-400 font-mono">{env.NEXT_PUBLIC_API_BASE_URL}</code>
-        </footer>
-      </main>
-    </div>
+        {/* Empty State */}
+        {!isLoading && !error && projects.length === 0 && (
+          <div className="p-10 border border-dashed border-[var(--color-border)] rounded-2xl bg-[var(--color-surface)] text-center max-w-lg mx-auto space-y-4 my-8">
+            <div className="w-12 h-12 mx-auto rounded-full bg-[var(--color-card)] border border-[var(--color-border)] flex items-center justify-center text-lg text-[var(--color-primary)]">
+              ✦
+            </div>
+            <div className="space-y-1">
+              <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
+                No research workspaces yet
+              </h2>
+              <p className="text-xs text-[var(--color-text-secondary)] max-w-sm mx-auto">
+                Begin by creating a research workspace. You can then collect PDF papers, online articles, or notes into shared evidence memory.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsCreateOpen(true)}
+              className="px-4 py-2 text-xs font-semibold bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white rounded-lg transition-colors shadow-xs"
+            >
+              Create your first project
+            </button>
+          </div>
+        )}
+
+        {/* Real Projects Grid */}
+        {!isLoading && !error && projects.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between text-xs text-[var(--color-text-secondary)]">
+              <span>All Projects ({projects.length})</span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {projects.map((p) => (
+                <Link
+                  key={p.id}
+                  href={`/projects/${p.id}`}
+                  className="group p-5 rounded-xl border border-[var(--color-border)] hover:border-[var(--color-border-hover)] bg-[var(--color-card)] flex flex-col justify-between transition-all hover:shadow-xs focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]"
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <h2 className="text-sm font-semibold text-[var(--color-text-primary)] group-hover:text-[var(--color-primary)] transition-colors line-clamp-1">
+                        {p.name}
+                      </h2>
+                      <span className="text-[10px] font-mono text-[var(--color-text-muted)] bg-[var(--color-surface)] px-1.5 py-0.5 rounded border border-[var(--color-border)] shrink-0">
+                        {p.id}
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-[var(--color-text-secondary)] line-clamp-2 min-h-[2rem]">
+                      {p.description || "No description provided."}
+                    </p>
+                  </div>
+
+                  <div className="pt-4 mt-4 border-t border-[var(--color-border)] flex items-center justify-between text-[11px] text-[var(--color-text-muted)]">
+                    <span className="flex items-center space-x-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-success)]" />
+                      <span>{p.sourceCount} {p.sourceCount === 1 ? "source" : "sources"}</span>
+                    </span>
+                    <span>{formatRelativeDate(p.updatedAt)}</span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </AppShell>
   );
 }

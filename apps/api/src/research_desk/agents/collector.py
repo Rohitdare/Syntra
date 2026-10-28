@@ -218,6 +218,8 @@ async def run(
         text_content=cleaned_text,
         page_offsets=page_offsets,
     )
+    if hasattr(deps.repos.sources, "session"):
+        await deps.repos.sources.session.commit()
 
     # 5. Chunk the text
     chunks = chunk_text(
@@ -283,6 +285,8 @@ async def run(
         stage_collected=True,
         chunk_count=len(chunks),
     )
+    if hasattr(deps.repos.sources, "session"):
+        await deps.repos.sources.session.commit()
 
     output = CollectorOutput(
         source_id=src_id,

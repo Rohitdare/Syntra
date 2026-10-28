@@ -40,6 +40,12 @@ class ProjectRepo:
                 await self.session.rollback()
         raise RuntimeError("Failed to generate unique project ID after 5 attempts")
 
+    async def get(self, project_id: str) -> Project | None:
+        """Fetch project by ID directly regardless of owner or status."""
+        stmt = select(Project).where(Project.id == project_id)
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
     async def get_owned(self, owner_id: uuid.UUID, project_id: str) -> Project | None:
         """Fetch project only if owned by owner_id and not deleting."""
         stmt = select(Project).where(

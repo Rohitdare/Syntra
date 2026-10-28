@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fetchHealth } from "../src/app/page";
+import { fetchHealth } from "../src/lib/api/client";
 
 describe("fetchHealth lifecycle", () => {
   beforeEach(() => {

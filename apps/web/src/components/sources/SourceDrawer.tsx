@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { getSource, SourceDetailResponse, ApiClientError } from "@/lib/api/client";
 
 export interface SourceDrawerProps {
@@ -21,6 +21,16 @@ export function SourceDrawer({
   const [data, setData] = useState<SourceDetailResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const triggerElementRef = useRef<HTMLElement | null>(null);
+
+  // Capture active element on open and restore on close
+  useEffect(() => {
+    if (isOpen) {
+      triggerElementRef.current = document.activeElement as HTMLElement | null;
+    } else if (triggerElementRef.current) {
+      triggerElementRef.current.focus();
+    }
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen || !sourceId) {

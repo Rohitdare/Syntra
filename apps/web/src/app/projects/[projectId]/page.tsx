@@ -63,6 +63,62 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
   const activeJobIdRef = useRef<string | null>(null);
   const lastSeqRef = useRef<number>(0);
   const activeInputRef = useRef<IngestSourceInput | null>(null);
+  const terminalReachedRef = useRef<boolean>(false);
+
+  // Attempt reconnection with exponential backoff up to 3 times
+  async function attemptReconnection(jobId: string, attemptsLeft = 3) {
+    if (terminalReachedRef.current) return;
+    setConnectionStatus("reconnecting");
+    const delay = (4 - attemptsLeft) * 1000;
+    await new Promise((r) => setTimeout(r, delay));
+
+    if (terminalReachedRef.current) return;
+
+    try {
+      await streamJobEvents({
+        jobId,
+        afterSeq: lastSeqRef.current,
+        onEvent: (event) => {
+          if (event.type === "heartbeat") return;
+          if (terminalReachedRef.current) return;
+
+          setConnectionStatus("live");
+          lastSeqRef.current = Math.max(lastSeqRef.current, event.seq);
+          setStreamEvents((prev) => {
+            if (prev.some((e) => e.seq === event.seq && e.type === event.type)) {
+              return prev;
+            }
+            return [...prev, event];
+          });
+
+          if (event.type === "stage_end") {
+            terminalReachedRef.current = true;
+            const isSuccess = event.data?.status === "succeeded";
+            setConnectionStatus(isSuccess ? "succeeded" : "failed");
+            if (isSuccess) {
+              getProject(projectId).then(setDetail).catch(() => {});
+            } else {
+              setStreamError("Ingestion pipeline finished with failed status.");
+            }
+          } else if (event.type === "error") {
+            setStreamError(event.message || "Collector stage reported an error.");
+          }
+        },
+      });
+    } catch {
+      if (terminalReachedRef.current) return;
+      if (attemptsLeft > 1) {
+        attemptReconnection(jobId, attemptsLeft - 1);
+      } else {
+        terminalReachedRef.current = true;
+        setConnectionStatus("failed");
+        setStreamError("Connection lost and could not be recovered. Click Retry to re-run ingestion.");
+      }
+    }
+  }
+
+  const attemptReconnectionRef = useRef(attemptReconnection);
+  attemptReconnectionRef.current = attemptReconnection;
 
   // Load project details
   const loadProject = useCallback(async () => {
@@ -93,6 +149,22 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
         if (!cancelled) {
           setDetail(data);
           setIsLoading(false);
+
+          // If there are running jobs on load, re-attach to the event stream
+          if (data.activeJobs && data.activeJobs.length > 0 && !activeJobIdRef.current) {
+            const runningJob = data.activeJobs.find(
+              (j) => j.status === "running" || j.status === "queued"
+            );
+            if (runningJob) {
+              activeJobIdRef.current = runningJob.jobId;
+              lastSeqRef.current = runningJob.lastSeq || 0;
+              terminalReachedRef.current = false;
+              setStreamSourceTitle("Active Pipeline Ingestion");
+              setIsStreamTrayOpen(true);
+              setConnectionStatus("reconnecting");
+              attemptReconnectionRef.current(runningJob.jobId);
+            }
+          }
         }
       })
       .catch((err: unknown) => {
@@ -123,11 +195,8 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
     activeInputRef.current = input;
     const title = input.title || input.file?.name || input.url || "New Evidence Source";
     setStreamSourceTitle(title);
-    setStreamEvents([]);
-    setConnectionStatus("connecting");
-    setStreamError(null);
-    setIsStreamTrayOpen(true);
-    setIsAddModalOpen(false);
+    terminalReachedRef.current = false;
+    lastSeqRef.current = 0;
 
     const idempotencyKey = generateIdempotencyKey();
 
@@ -138,12 +207,26 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
         idempotencyKey,
         onJobId: (jobId) => {
           activeJobIdRef.current = jobId;
+          // Close modal and reveal live stream tray upon verified stream start
+          setIsAddModalOpen(false);
+          setIsStreamTrayOpen(true);
+          setStreamEvents([]);
+          setConnectionStatus("live");
+          setStreamError(null);
         },
         onEvent: (event) => {
+          if (event.type === "heartbeat") {
+            return; // Heartbeat does not alter UI event sequence
+          }
+
+          if (terminalReachedRef.current) {
+            return; // Terminal state is locked
+          }
+
           setConnectionStatus("live");
           lastSeqRef.current = Math.max(lastSeqRef.current, event.seq);
           setStreamEvents((prev) => {
-            // Deduplicate by sequence
+            // Deduplicate by sequence and event type
             if (prev.some((e) => e.seq === event.seq && e.type === event.type)) {
               return prev;
             }
@@ -151,10 +234,13 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
           });
 
           if (event.type === "stage_end") {
+            terminalReachedRef.current = true;
             const isSuccess = event.data?.status === "succeeded";
             setConnectionStatus(isSuccess ? "succeeded" : "failed");
             if (isSuccess) {
               loadProject();
+            } else {
+              setStreamError("Ingestion stage finished with failed status.");
             }
           } else if (event.type === "error") {
             setStreamError(event.message || "Collector stage reported an error.");
@@ -162,60 +248,18 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
         },
       });
     } catch (err: unknown) {
-      // Check if we can reconnect to the job if network dropped mid-stream
+      if (terminalReachedRef.current) {
+        return;
+      }
+
       if (activeJobIdRef.current) {
         attemptReconnection(activeJobIdRef.current);
       } else {
-        setConnectionStatus("failed");
-        if (err instanceof ApiClientError) {
-          setStreamError(`${err.code}: ${err.message}`);
-        } else if (err instanceof Error) {
-          setStreamError(err.message);
-        } else {
-          setStreamError("Ingestion stream interrupted.");
-        }
+        // Failed before stream started: re-throw so AddSourceModal stays open and presents error
+        throw err;
       }
     } finally {
       setIsSubmittingSource(false);
-    }
-  }
-
-  // Attempt reconnection with exponential backoff up to 3 times
-  async function attemptReconnection(jobId: string, attemptsLeft = 3) {
-    setConnectionStatus("reconnecting");
-    const delay = (4 - attemptsLeft) * 1000;
-    await new Promise((r) => setTimeout(r, delay));
-
-    try {
-      await streamJobEvents({
-        jobId,
-        afterSeq: lastSeqRef.current,
-        onEvent: (event) => {
-          setConnectionStatus("live");
-          lastSeqRef.current = Math.max(lastSeqRef.current, event.seq);
-          setStreamEvents((prev) => {
-            if (prev.some((e) => e.seq === event.seq && e.type === event.type)) {
-              return prev;
-            }
-            return [...prev, event];
-          });
-
-          if (event.type === "stage_end") {
-            const isSuccess = event.data?.status === "succeeded";
-            setConnectionStatus(isSuccess ? "succeeded" : "failed");
-            if (isSuccess) {
-              loadProject();
-            }
-          }
-        },
-      });
-    } catch {
-      if (attemptsLeft > 1) {
-        attemptReconnection(jobId, attemptsLeft - 1);
-      } else {
-        setConnectionStatus("failed");
-        setStreamError("Connection lost and could not be recovered. Click Retry to re-run ingestion.");
-      }
     }
   }
 
@@ -415,22 +459,40 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
 
             {/* TAB 2: Insights Preview */}
             {activeTab === "insights" && (
-              <div className="p-8 border border-[var(--color-border)] rounded-xl bg-[var(--color-card)] text-center space-y-2">
-                <span className="text-xl">⚖️</span>
-                <h2 className="text-sm font-semibold">Evidence Synthesis & Conflicts</h2>
-                <p className="text-xs text-[var(--color-text-secondary)] max-w-md mx-auto">
-                  When Analyst (Stage 4) and Critic (Stage 5) agents process this workspace, claims and cross-source stances (supports, contradicts, nuances) will appear here.
+              <div className="p-10 border border-dashed border-[var(--color-border)] rounded-2xl bg-[var(--color-surface)]/60 text-center space-y-3 max-w-xl mx-auto my-6 animate-in fade-in duration-150">
+                <div className="w-12 h-12 mx-auto rounded-full bg-[var(--color-card)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-agent-critic)] shadow-xs">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
+                  </svg>
+                </div>
+                <div className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-[var(--color-card)] border border-[var(--color-border)] text-[var(--color-text-muted)] uppercase tracking-wider">
+                  Upcoming: Stage 4 (Analyst) & Stage 5 (Critic)
+                </div>
+                <h2 className="text-sm font-bold text-[var(--color-text-primary)]">
+                  Evidence Synthesis & Cross-Source Conflicts
+                </h2>
+                <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed max-w-md mx-auto">
+                  When Analyst and Critic agents process this workspace, extracted claims and verified stances (supports, contradicts, nuances) will be surfaced here with citation references.
                 </p>
               </div>
             )}
 
             {/* TAB 3: Ask Preview */}
             {activeTab === "ask" && (
-              <div className="p-8 border border-[var(--color-border)] rounded-xl bg-[var(--color-card)] text-center space-y-2">
-                <span className="text-xl">✍️</span>
-                <h2 className="text-sm font-semibold">Grounded Research Briefings</h2>
-                <p className="text-xs text-[var(--color-text-secondary)] max-w-md mx-auto">
-                  When Writer (Stage 6) is enabled, you can ask open research questions and receive a cited briefing referencing verified source tags.
+              <div className="p-10 border border-dashed border-[var(--color-border)] rounded-2xl bg-[var(--color-surface)]/60 text-center space-y-3 max-w-xl mx-auto my-6 animate-in fade-in duration-150">
+                <div className="w-12 h-12 mx-auto rounded-full bg-[var(--color-card)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-agent-writer)] shadow-xs">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                </div>
+                <div className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-[var(--color-card)] border border-[var(--color-border)] text-[var(--color-text-muted)] uppercase tracking-wider">
+                  Upcoming: Stage 6 (Writer)
+                </div>
+                <h2 className="text-sm font-bold text-[var(--color-text-primary)]">
+                  Grounded Research Briefings
+                </h2>
+                <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed max-w-md mx-auto">
+                  Ask targeted research questions across your evidence memory. The Writer agent will construct comprehensive briefings with validated [S#] citations, noted gaps, and consensus summaries.
                 </p>
               </div>
             )}

@@ -356,4 +356,102 @@ describe("Stage 3C: Source Management and Streaming Client", () => {
       );
     });
   });
+
+  describe("Stage 3D Regression and Security Validation", () => {
+    it("handles HTTP 422 FETCH_BLOCKED when an internal or private URL is submitted", async () => {
+      const errorPayload = {
+        error: {
+          code: "FETCH_BLOCKED",
+          message: "URL not allowed. For security, private, localhost, or metadata addresses cannot be fetched.",
+          requestId: "req_ssrf_01",
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      };
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        headers: new Headers({ "Content-Type": "application/json" }),
+        json: async () => errorPayload,
+      } as unknown as Response);
+
+      await expect(
+        ingestSourceStream({
+          projectId: "prj_01",
+          input: { url: "http://169.254.169.254/latest/meta-data" },
+          onEvent: vi.fn(),
+          baseUrl: "http://localhost:8000",
+        })
+      ).rejects.toThrow("URL not allowed");
+    });
+
+    it("handles HTTP 422 NO_TEXT when an empty or image-only document is ingested", async () => {
+      const errorPayload = {
+        error: {
+          code: "NO_TEXT",
+          message: "No readable text found. If this is a scanned PDF, paste the text instead.",
+          requestId: "req_notext_01",
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      };
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        headers: new Headers({ "Content-Type": "application/json" }),
+        json: async () => errorPayload,
+      } as unknown as Response);
+
+      await expect(
+        ingestSourceStream({
+          projectId: "prj_01",
+          input: { text: "Too short" },
+          onEvent: vi.fn(),
+          baseUrl: "http://localhost:8000",
+        })
+      ).rejects.toThrow("No readable text found");
+    });
+
+    it("parses NDJSON stream with heartbeat events without crashing", async () => {
+      const heartbeatEvent: StreamEvent = {
+        jobId: "job_hb_01",
+        seq: 1,
+        ts: "2026-10-28T12:00:00Z",
+        stage: "collect",
+        agent: "system",
+        type: "heartbeat",
+        message: "keepalive",
+      };
+      const realEvent: StreamEvent = {
+        jobId: "job_hb_01",
+        seq: 1,
+        ts: "2026-10-28T12:00:01Z",
+        stage: "collect",
+        agent: "collector",
+        type: "stage_start",
+        message: "Ingesting text",
+      };
+
+      const encoder = new TextEncoder();
+      const payload = encoder.encode(
+        JSON.stringify(heartbeatEvent) + "\n" + JSON.stringify(realEvent) + "\n"
+      );
+
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(payload);
+          controller.close();
+        },
+      });
+
+      const events: StreamEvent[] = [];
+      await parseNdjsonStream(stream, (e) => events.push(e));
+      expect(events).toHaveLength(2);
+      expect(events[0].type).toBe("heartbeat");
+      expect(events[1].type).toBe("stage_start");
+    });
+  });
 });
+

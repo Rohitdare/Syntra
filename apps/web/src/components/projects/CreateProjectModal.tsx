@@ -17,6 +17,7 @@ export function CreateProjectModal({ isOpen, onClose, onSuccess }: CreateProject
 
   const inputRef = useRef<HTMLInputElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+  const triggerElementRef = useRef<HTMLElement | null>(null);
 
   function resetForm() {
     setName("");
@@ -31,10 +32,13 @@ export function CreateProjectModal({ isOpen, onClose, onSuccess }: CreateProject
     onClose();
   }
 
-  // Auto-focus input when opened
+  // Auto-focus input when opened and restore focus when closed
   useEffect(() => {
     if (isOpen) {
+      triggerElementRef.current = document.activeElement as HTMLElement | null;
       inputRef.current?.focus();
+    } else if (triggerElementRef.current) {
+      triggerElementRef.current.focus();
     }
   }, [isOpen]);
 

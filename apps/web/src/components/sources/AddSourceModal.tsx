@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { IngestSourceInput } from "@/lib/api/client";
+import { IngestSourceInput, ApiClientError } from "@/lib/api/client";
 
 export interface AddSourceModalProps {
   isOpen: boolean;
@@ -41,6 +41,18 @@ export function AddSourceModal({
 
   // General submission error
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // Trigger ref for accessible focus restoration
+  const triggerElementRef = useRef<HTMLElement | null>(null);
+
+  // Save active element on open and restore on close
+  useEffect(() => {
+    if (isOpen) {
+      triggerElementRef.current = document.activeElement as HTMLElement | null;
+    } else if (triggerElementRef.current) {
+      triggerElementRef.current.focus();
+    }
+  }, [isOpen]);
 
   // Escape key closes modal unless submitting
   useEffect(() => {
@@ -162,7 +174,25 @@ export function AddSourceModal({
         });
       }
     } catch (err: unknown) {
-      if (err instanceof Error) {
+      if (err instanceof ApiClientError) {
+        if (err.code === "FETCH_BLOCKED") {
+          setSubmitError("URL blocked: For security, private, localhost, link-local, and internal addresses cannot be fetched.");
+        } else if (err.code === "FETCH_FAILED") {
+          setSubmitError("Failed to fetch content from this URL. Please verify the URL or paste the article text directly.");
+        } else if (err.code === "JOB_ACTIVE" || err.status === 409) {
+          setSubmitError("A research stage is already actively running. Please wait for the current job to complete.");
+        } else if (err.code === "NO_TEXT") {
+          setSubmitError("No readable text found. If this is a scanned PDF, paste extracted text instead.");
+        } else if (err.code === "PAYLOAD_TOO_LARGE") {
+          setSubmitError("File exceeds the 8 MB upload cap. Please select a smaller PDF.");
+        } else if (err.code === "UNSUPPORTED_MEDIA_TYPE") {
+          setSubmitError("Unsupported file type. Please upload a standard text-searchable PDF.");
+        } else if (err.code === "LIMIT_REACHED") {
+          setSubmitError("Project source limit reached. Maximum allowed sources have been added.");
+        } else {
+          setSubmitError(`${err.code}: ${err.message}`);
+        }
+      } else if (err instanceof Error) {
         setSubmitError(err.message);
       } else {
         setSubmitError("Failed to initiate source ingestion.");

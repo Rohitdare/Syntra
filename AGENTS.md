@@ -107,7 +107,7 @@ Never hardcode keys or URLs with credentials. Never read, print or paste `.env*`
 Stages (one at a time, in order): 0 scaffold, tooling and config; 1 databases, jobs, providers and adapters; 2 Collector; 3 UI shell and runner; 4 Analyst; 5 Critic; 6 Writer and Ask tab; 7 polish, robustness and production hardening; 8 deploy, README, demo data.
 
 Status (update this list at the end of every stage):
-- [x] 0  - [x] 1  - [x] 2  - [ ] 3  - [ ] 4  - [ ] 5  - [ ] 6  - [ ] 7  - [ ] 8
+- [x] 0  - [x] 1  - [x] 2  - [x] 3  - [ ] 4  - [ ] 5  - [ ] 6  - [ ] 7  - [ ] 8
 
 Done means: lint, type check and tests pass for every area touched; the stage's manual check works; docs updated if a contract changed; a commit exists.
 

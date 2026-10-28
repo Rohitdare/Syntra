@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { StreamEvent } from "@/lib/api/schemas";
 
 export type StreamConnectionStatus = "connecting" | "live" | "reconnecting" | "succeeded" | "failed";
@@ -27,13 +27,29 @@ export function StreamTray({
   onRetry,
 }: StreamTrayProps) {
   const [isMinimized, setIsMinimized] = useState(false);
+  const logContainerRef = useRef<HTMLDivElement>(null);
+
+  // Filter out heartbeat events per API spec
+  const visibleEvents = events.filter((e) => e.type !== "heartbeat");
+  const latestEvent = visibleEvents.length > 0 ? visibleEvents[visibleEvents.length - 1] : null;
+
+  // Extract result event data if available
+  const resultEvent = visibleEvents.find((e) => e.type === "result");
+  const resultData = resultEvent?.data as
+    | { chunkCount?: number; charCount?: number; tag?: string; sourceId?: string }
+    | undefined;
+
+  // Auto-scroll event log to bottom when new events arrive
+  useEffect(() => {
+    if (!isMinimized && logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [visibleEvents.length, isMinimized]);
 
   if (!isOpen) return null;
 
-  const latestEvent = events.length > 0 ? events[events.length - 1] : null;
-
   function getAgentColorClass(agent: string): string {
-    switch (agent) {
+    switch (agent.toLowerCase()) {
       case "collector":
         return "text-[var(--color-agent-collector)]";
       case "analyst":
@@ -51,28 +67,28 @@ export function StreamTray({
     switch (connectionStatus) {
       case "live":
         return (
-          <span className="flex items-center space-x-1.5 text-[11px] font-mono font-medium text-[var(--color-success)] bg-[var(--color-success-soft)] px-2 py-0.5 rounded-full">
+          <span className="flex items-center space-x-1.5 text-[11px] font-mono font-medium text-[var(--color-success)] bg-[var(--color-success-soft)] px-2 py-0.5 rounded-full border border-[var(--color-success)]/20">
             <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-success)] animate-pulse inline-block" />
             <span>LIVE</span>
           </span>
         );
       case "reconnecting":
         return (
-          <span className="flex items-center space-x-1.5 text-[11px] font-mono font-medium text-[var(--color-warning)] bg-[var(--color-warning-soft)] px-2 py-0.5 rounded-full">
+          <span className="flex items-center space-x-1.5 text-[11px] font-mono font-medium text-[var(--color-warning)] bg-[var(--color-warning-soft)] px-2 py-0.5 rounded-full border border-[var(--color-warning)]/20">
             <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-warning)] animate-ping inline-block" />
             <span>RECONNECTING</span>
           </span>
         );
       case "succeeded":
         return (
-          <span className="flex items-center space-x-1 text-[11px] font-mono font-medium text-[var(--color-success)] bg-[var(--color-success-soft)] px-2 py-0.5 rounded-full">
+          <span className="flex items-center space-x-1 text-[11px] font-mono font-medium text-[var(--color-success)] bg-[var(--color-success-soft)] px-2 py-0.5 rounded-full border border-[var(--color-success)]/20">
             <span>✓</span>
-            <span>SUCCEEDED</span>
+            <span>COMPLETE</span>
           </span>
         );
       case "failed":
         return (
-          <span className="flex items-center space-x-1 text-[11px] font-mono font-medium text-[var(--color-error)] bg-[var(--color-error-soft)] px-2 py-0.5 rounded-full">
+          <span className="flex items-center space-x-1 text-[11px] font-mono font-medium text-[var(--color-error)] bg-[var(--color-error-soft)] px-2 py-0.5 rounded-full border border-[var(--color-error)]/20">
             <span>✕</span>
             <span>FAILED</span>
           </span>
@@ -89,126 +105,208 @@ export function StreamTray({
   }
 
   return (
-    <div
-      className={`fixed bottom-4 right-4 z-40 transition-all duration-200 ease-out ${
-        isMinimized ? "w-80" : "w-full max-w-md"
+    <aside
+      className={`fixed bottom-4 right-4 z-40 transition-all duration-200 ease-out shadow-2xl rounded-xl overflow-hidden border border-[var(--color-border)] bg-[var(--color-surface)] backdrop-blur-md ${
+        isMinimized ? "w-72 sm:w-80" : "w-full max-w-md sm:max-w-lg"
       }`}
       role="region"
       aria-label="Live Ingestion Tray"
       aria-live="polite"
     >
-      <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-2xl overflow-hidden backdrop-blur-md">
-        {/* Header Bar */}
-        <div className="p-3 border-b border-[var(--color-border)] flex items-center justify-between bg-[var(--color-card)]/70">
-          <div className="flex items-center space-x-2.5 truncate">
-            <span className="text-sm">⚡</span>
-            <div className="truncate">
-              <h3 className="text-xs font-bold text-[var(--color-text-primary)] truncate">
-                {sourceTitle || "Ingesting Source"}
-              </h3>
-              <p className="text-[10px] text-[var(--color-text-secondary)] font-mono">
-                {stageName} Pipeline
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center space-x-2 shrink-0">
-            {getStatusBadge()}
-            <button
-              type="button"
-              onClick={() => setIsMinimized(!isMinimized)}
-              aria-label={isMinimized ? "Expand stream tray" : "Minimize stream tray"}
-              className="p-1 rounded text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-card)] transition-colors cursor-pointer text-xs"
-            >
-              {isMinimized ? "▲" : "▼"}
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close stream tray"
-              className="p-1 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-card)] transition-colors cursor-pointer text-xs"
-            >
-              ✕
-            </button>
+      {/* Header Bar */}
+      <div className="p-3 border-b border-[var(--color-border)] flex items-center justify-between bg-[var(--color-card)]/80 gap-2">
+        <div className="flex items-center space-x-2.5 min-w-0">
+          <span className="text-sm shrink-0" aria-hidden="true">
+            {connectionStatus === "succeeded" ? "✓" : connectionStatus === "failed" ? "✕" : "⚡"}
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-xs font-bold text-[var(--color-text-primary)] truncate">
+              {sourceTitle || "Evidence Ingestion"}
+            </h3>
+            <p className="text-[10px] text-[var(--color-text-secondary)] font-mono">
+              {stageName} Pipeline
+            </p>
           </div>
         </div>
 
-        {/* Minimized Quick Summary */}
-        {isMinimized ? (
-          <div className="p-2.5 text-xs text-[var(--color-text-secondary)] truncate bg-[var(--color-surface)]">
-            {latestEvent ? (
-              <span className="truncate block">
-                {latestEvent.message || `Event #${latestEvent.seq}: ${latestEvent.type}`}
-              </span>
-            ) : (
-              <span>Establishing stream connection...</span>
-            )}
-          </div>
-        ) : (
-          <div className="p-3 space-y-3">
-            {/* Latest Message Hero */}
-            <div className="p-2.5 rounded-lg bg-[var(--color-card)] border border-[var(--color-border)] space-y-1">
-              <div className="flex items-center justify-between text-[10px] text-[var(--color-text-muted)] font-mono">
-                <span>LATEST EVENT</span>
-                {latestEvent && <span>Seq #{latestEvent.seq}</span>}
-              </div>
-              <p className="text-xs font-medium text-[var(--color-text-primary)]">
-                {latestEvent?.message || "Waiting for pipeline events..."}
-              </p>
-            </div>
+        <div className="flex items-center space-x-1.5 shrink-0">
+          {getStatusBadge()}
+          <button
+            type="button"
+            onClick={() => setIsMinimized(!isMinimized)}
+            aria-label={isMinimized ? "Expand stream tray" : "Minimize stream tray"}
+            title={isMinimized ? "Expand" : "Minimize"}
+            className="p-1 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-card)] transition-colors cursor-pointer text-xs"
+          >
+            {isMinimized ? "▲" : "▼"}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close stream tray"
+            title="Dismiss tray"
+            className="p-1 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-card)] transition-colors cursor-pointer text-xs"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
 
-            {/* Error Message if Failed */}
-            {(connectionStatus === "failed" || errorMessage) && (
-              <div className="p-2.5 rounded-lg bg-[var(--color-error-soft)] border border-[var(--color-error)] text-xs text-[var(--color-error)] flex items-start justify-between">
-                <span>{errorMessage || "Ingestion pipeline interrupted or encountered an error."}</span>
-                {onRetry && (
+      {/* Minimized Quick Summary */}
+      {isMinimized ? (
+        <div className="p-2.5 text-xs text-[var(--color-text-secondary)] truncate bg-[var(--color-surface)] flex items-center justify-between gap-2">
+          {connectionStatus === "succeeded" ? (
+            <span className="text-[var(--color-success)] font-medium truncate">
+              ✓ Ingestion complete ({visibleEvents.length} events)
+            </span>
+          ) : connectionStatus === "failed" ? (
+            <span className="text-[var(--color-error)] font-medium truncate">
+              ✕ Ingestion failed: {errorMessage || "Error occurred"}
+            </span>
+          ) : latestEvent ? (
+            <span className="truncate block">
+              {latestEvent.message || `Event #${latestEvent.seq}: ${latestEvent.type}`}
+            </span>
+          ) : (
+            <span>Connecting to live pipeline stream...</span>
+          )}
+          <button
+            type="button"
+            onClick={() => setIsMinimized(false)}
+            className="text-[10px] font-medium text-[var(--color-primary)] hover:underline shrink-0 cursor-pointer"
+          >
+            View
+          </button>
+        </div>
+      ) : (
+        <div className="p-3.5 space-y-3 max-h-[75vh] flex flex-col">
+          {/* Succeeded State Hero: Clear Completion Summary */}
+          {connectionStatus === "succeeded" && (
+            <div className="p-3.5 rounded-lg bg-[var(--color-success-soft)] border border-[var(--color-success)]/30 space-y-2 text-xs">
+              <div className="flex items-center space-x-2 text-[var(--color-success)] font-bold">
+                <span className="w-5 h-5 rounded-full bg-[var(--color-success)] text-white flex items-center justify-center text-xs">
+                  ✓
+                </span>
+                <span>Ingestion Completed Successfully</span>
+              </div>
+              <p className="text-[var(--color-text-primary)] leading-relaxed">
+                Source document parsed, text cleaned, and vector chunk embeddings committed to shared evidence memory.
+              </p>
+              {resultData && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 font-mono text-[11px] text-[var(--color-text-secondary)]">
+                  {resultData.tag && (
+                    <span className="font-bold text-[var(--color-primary)]">
+                      Tag: [{resultData.tag}]
+                    </span>
+                  )}
+                  {resultData.chunkCount !== undefined && (
+                    <span>{resultData.chunkCount} chunks indexed</span>
+                  )}
+                  {resultData.charCount !== undefined && (
+                    <span>{resultData.charCount.toLocaleString()} characters</span>
+                  )}
+                </div>
+              )}
+              <div className="pt-1 flex justify-end">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-3 py-1 bg-[var(--color-card)] hover:bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md font-medium text-xs text-[var(--color-text-primary)] transition-colors cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Failed State Hero: Clear Error & Recovery Action */}
+          {connectionStatus === "failed" && (
+            <div className="p-3.5 rounded-lg bg-[var(--color-error-soft)] border border-[var(--color-error)]/40 space-y-2 text-xs">
+              <div className="flex items-center space-x-2 text-[var(--color-error)] font-bold">
+                <span className="w-5 h-5 rounded-full bg-[var(--color-error)] text-white flex items-center justify-center text-xs">
+                  ✕
+                </span>
+                <span>Ingestion Pipeline Failed</span>
+              </div>
+              <p className="text-[var(--color-error)] leading-relaxed font-medium">
+                {errorMessage || latestEvent?.message || "An error interrupted the collector pipeline."}
+              </p>
+              {onRetry && (
+                <div className="pt-1 flex items-center justify-between">
+                  <span className="text-[11px] text-[var(--color-text-secondary)]">
+                    Safe to retry without duplicate chunks.
+                  </span>
                   <button
                     type="button"
                     onClick={onRetry}
-                    className="ml-2 font-bold underline hover:no-underline shrink-0 cursor-pointer"
+                    className="px-3 py-1 bg-[var(--color-card)] hover:bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md font-bold text-xs text-[var(--color-primary)] transition-colors cursor-pointer"
                   >
-                    Retry
+                    Retry Ingestion
                   </button>
-                )}
-              </div>
-            )}
+                </div>
+              )}
+            </div>
+          )}
 
-            {/* Event Log Scroll Area */}
-            <div className="space-y-1.5">
-              <span className="text-[10px] font-semibold text-[var(--color-text-muted)] uppercase tracking-wider font-mono block">
-                Event Sequence ({events.length})
-              </span>
-              <div className="max-h-48 overflow-y-auto space-y-1 text-[11px] p-1.5 rounded-lg bg-[var(--color-card)]/50 border border-[var(--color-border)] font-mono">
-                {events.length === 0 ? (
-                  <p className="text-xs text-[var(--color-text-muted)] italic p-2 text-center">
-                    No events received yet
-                  </p>
-                ) : (
-                  events.map((evt, idx) => (
-                    <div
-                      key={`${evt.jobId}_${evt.seq}_${idx}`}
-                      className="p-1 rounded flex items-start space-x-2 hover:bg-[var(--color-surface)] transition-colors leading-relaxed"
-                    >
-                      <span className="text-[var(--color-text-muted)] text-[10px] shrink-0 w-6">
-                        #{evt.seq}
-                      </span>
-                      <span className={`font-semibold uppercase text-[10px] shrink-0 ${getAgentColorClass(evt.agent)}`}>
-                        [{evt.agent}]
-                      </span>
-                      <span className="text-[var(--color-primary)] font-semibold shrink-0">
-                        {evt.type}
-                      </span>
-                      <span className="text-[var(--color-text-secondary)] truncate">
-                        {evt.message || JSON.stringify(evt.data || {})}
-                      </span>
-                    </div>
-                  ))
-                )}
+          {/* Active Streaming Hero: Current Activity */}
+          {connectionStatus !== "succeeded" && connectionStatus !== "failed" && (
+            <div className="p-3 rounded-lg bg-[var(--color-card)] border border-[var(--color-border)] space-y-1">
+              <div className="flex items-center justify-between text-[10px] text-[var(--color-text-muted)] font-mono">
+                <span className="font-semibold uppercase tracking-wider">Current Activity</span>
+                {latestEvent && <span>Seq #{latestEvent.seq}</span>}
               </div>
+              <p className="text-xs font-medium text-[var(--color-text-primary)] leading-relaxed">
+                {latestEvent?.message || "Connecting to live pipeline stream..."}
+              </p>
+            </div>
+          )}
+
+          {/* Event Sequence Log */}
+          <div className="space-y-1.5 flex-1 min-h-0">
+            <div className="flex items-center justify-between text-[10px] font-semibold text-[var(--color-text-muted)] uppercase tracking-wider font-mono">
+              <span>Event Stream ({visibleEvents.length})</span>
+              {connectionStatus === "live" && (
+                <span className="text-[var(--color-success)] flex items-center space-x-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-success)] animate-pulse" />
+                  <span>Streaming</span>
+                </span>
+              )}
+            </div>
+
+            <div
+              ref={logContainerRef}
+              className="max-h-44 overflow-y-auto space-y-1 text-[11px] p-2 rounded-lg bg-[var(--color-card)]/50 border border-[var(--color-border)] font-mono"
+            >
+              {visibleEvents.length === 0 ? (
+                <p className="text-xs text-[var(--color-text-muted)] italic p-2 text-center">
+                  Waiting for stream connection...
+                </p>
+              ) : (
+                visibleEvents.map((evt, idx) => (
+                  <div
+                    key={`${evt.jobId}_${evt.seq}_${idx}`}
+                    className="p-1 rounded flex items-start space-x-2 hover:bg-[var(--color-surface)] transition-colors leading-relaxed"
+                  >
+                    <span className="text-[var(--color-text-muted)] text-[10px] shrink-0 w-6">
+                      #{evt.seq}
+                    </span>
+                    <span className={`font-semibold uppercase text-[10px] shrink-0 ${getAgentColorClass(evt.agent)}`}>
+                      [{evt.agent}]
+                    </span>
+                    <span className="text-[var(--color-primary)] font-semibold shrink-0">
+                      {evt.type}
+                    </span>
+                    <span className="text-[var(--color-text-secondary)] truncate">
+                      {evt.message || (evt.data ? JSON.stringify(evt.data) : "")}
+                    </span>
+                  </div>
+                ))
+              )}
             </div>
           </div>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </aside>
   );
 }
+

@@ -28,14 +28,18 @@ export function ConfirmDialog({
   onCancel,
 }: ConfirmDialogProps) {
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
+  const triggerElementRef = useRef<HTMLElement | null>(null);
 
-  // Focus confirm button when opened
+  // Focus confirm button when opened, and restore trigger focus when closed
   useEffect(() => {
     if (isOpen) {
+      triggerElementRef.current = document.activeElement as HTMLElement | null;
       const timer = setTimeout(() => {
         confirmButtonRef.current?.focus();
       }, 50);
       return () => clearTimeout(timer);
+    } else if (triggerElementRef.current) {
+      triggerElementRef.current.focus();
     }
   }, [isOpen]);
 

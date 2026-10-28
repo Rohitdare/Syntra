@@ -190,3 +190,41 @@ class JobRepo:
         await self.session.flush()
         rowcount = getattr(res, "rowcount", 0)
         return int(rowcount or 0)
+
+    async def list_active_for_project(self, project_id: str) -> Sequence[Job]:
+        """Find all active (queued or running) jobs in a project."""
+        stmt = (
+            select(Job)
+            .where(
+                Job.project_id == project_id,
+                Job.status.in_(["queued", "running"]),
+            )
+            .order_by(Job.created_at.asc())
+        )
+        res = await self.session.execute(stmt)
+        return res.scalars().all()
+
+    async def has_active_for_source(self, project_id: str, source_id: str) -> bool:
+        """Check if any active job exists for this source."""
+        stmt = select(func.count(Job.id)).where(
+            Job.project_id == project_id,
+            Job.source_id == source_id,
+            Job.status.in_(["queued", "running"]),
+        )
+        res = await self.session.execute(stmt)
+        return bool(res.scalar_one() > 0)
+
+    async def has_active_for_project(self, project_id: str) -> bool:
+        """Check if any active job exists for this project."""
+        stmt = select(func.count(Job.id)).where(
+            Job.project_id == project_id,
+            Job.status.in_(["queued", "running"]),
+        )
+        res = await self.session.execute(stmt)
+        return bool(res.scalar_one() > 0)
+
+    async def get_last_seq(self, job_id: uuid.UUID) -> int:
+        """Get the maximum sequence number emitted for a job."""
+        stmt = select(func.coalesce(func.max(JobEvent.seq), 0)).where(JobEvent.job_id == job_id)
+        res = await self.session.execute(stmt)
+        return int(res.scalar_one() or 0)

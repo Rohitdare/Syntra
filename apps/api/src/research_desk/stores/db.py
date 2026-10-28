@@ -33,8 +33,9 @@ def get_engine(settings: Settings | None = None) -> AsyncEngine:
     if _engine is None:
         cfg = settings or get_settings()
         db_url = cfg.DATABASE_URL.get_secret_value()
-        # Ensure async driver prefix for postgresql
-        if db_url.startswith("postgresql://"):
+        if not db_url:
+            db_url = "postgresql+asyncpg://postgres:postgres@localhost:5432/research_desk"
+        elif db_url.startswith("postgresql://"):
             db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
         connect_args: dict[str, Any] = {}

@@ -9,3 +9,8 @@ alembic==1.20.1
 qdrant-client==1.20.0
 google-genai==2.33.0
 greenlet==3.1.1
+pypdf==6.21.3
+readability-lxml==0.9
+beautifulsoup4==4.15.0
+python-multipart==0.0.32
+

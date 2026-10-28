@@ -4,6 +4,9 @@ from fastapi import FastAPI
 
 from research_desk.api.middleware import setup_middleware
 from research_desk.api.routes.health import router as health_router
+from research_desk.api.routes.jobs import router as jobs_router
+from research_desk.api.routes.projects import router as projects_router
+from research_desk.api.routes.sources import router as sources_router
 from research_desk.core.config import Settings, get_settings
 from research_desk.core.errors import register_error_handlers
 from research_desk.core.logging import setup_logging
@@ -34,6 +37,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_error_handlers(app)
 
     app.include_router(health_router)
+    app.include_router(projects_router)
+    app.include_router(sources_router)
+    app.include_router(jobs_router)
 
     return app
 

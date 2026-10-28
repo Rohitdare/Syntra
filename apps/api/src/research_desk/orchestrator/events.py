@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import uuid
 from collections import defaultdict
 from collections.abc import AsyncGenerator
@@ -33,6 +34,7 @@ class EventMessage:
     def to_dict(self) -> dict[str, Any]:
         """Convert message to wire dict."""
         res: dict[str, Any] = {
+            "jobId": str(self.job_id),
             "seq": self.seq,
             "ts": self.ts.isoformat(),
             "stage": self.stage,
@@ -44,6 +46,10 @@ class EventMessage:
         if self.data is not None:
             res["data"] = self.data
         return res
+
+    def to_ndjson(self) -> str:
+        """Convert message to single JSON string."""
+        return json.dumps(self.to_dict())
 
 
 class EventSink:
@@ -65,27 +71,45 @@ class EventSink:
         data: dict[str, Any] | None = None,
     ) -> EventMessage:
         """Persist event to database and broadcast to in-memory subscriber queues."""
-        async with self.sessionmaker() as session:
-            async with session.begin():
+        if type_ == "heartbeat":
+            # Heartbeats do not consume a database seq and carry seq of the last real event
+            async with self.sessionmaker() as session:
                 repo = JobRepo(session)
-                row = await repo.add_event(
-                    job_id=job_id,
-                    stage=stage,
-                    agent=agent,
-                    type_=type_,
-                    message=message,
-                    data=data,
-                )
-                msg = EventMessage(
-                    job_id=row.job_id,
-                    seq=row.seq,
-                    ts=row.ts,
-                    stage=row.stage,
-                    agent=row.agent,
-                    type=row.type,
-                    message=row.message,
-                    data=row.data,
-                )
+                events = await repo.get_events(job_id, since_seq=0)
+                last_seq = events[-1].seq if events else 0
+
+            msg = EventMessage(
+                job_id=job_id,
+                seq=last_seq,
+                ts=datetime.datetime.now(datetime.timezone.utc),
+                stage=stage,
+                agent=agent,
+                type=type_,
+                message=message,
+                data=data,
+            )
+        else:
+            async with self.sessionmaker() as session:
+                async with session.begin():
+                    repo = JobRepo(session)
+                    row = await repo.add_event(
+                        job_id=job_id,
+                        stage=stage,
+                        agent=agent,
+                        type_=type_,
+                        message=message,
+                        data=data,
+                    )
+                    msg = EventMessage(
+                        job_id=row.job_id,
+                        seq=row.seq,
+                        ts=row.ts,
+                        stage=row.stage,
+                        agent=row.agent,
+                        type=row.type,
+                        message=row.message,
+                        data=row.data,
+                    )
 
         # Fan-out to in-memory subscriber queues
         async with self._lock:
@@ -103,6 +127,7 @@ class EventSink:
 
         First replays historical events from DB with seq > since_seq,
         then streams live events from memory until stage_end.
+        For finished jobs, it replays and ends immediately.
         """
         queue: asyncio.Queue[EventMessage] = asyncio.Queue()
 
@@ -113,6 +138,7 @@ class EventSink:
 
         try:
             # 1. Replay historical events from PostgreSQL
+            is_terminal = False
             async with self.sessionmaker() as session:
                 repo = JobRepo(session)
                 historical = await repo.get_events(job_id, since_seq=since_seq)
@@ -132,12 +158,20 @@ class EventSink:
                     if msg.type == "stage_end":
                         return
 
+                job = await repo.get(job_id)
+                if job and job.status in ("succeeded", "failed", "interrupted"):
+                    is_terminal = True
+
+            if is_terminal:
+                return
+
             # 2. Yield live events
             while True:
                 msg = await queue.get()
-                if msg.seq <= last_seq:
-                    continue
-                last_seq = msg.seq
+                if msg.type != "heartbeat":
+                    if msg.seq <= last_seq:
+                        continue
+                    last_seq = msg.seq
                 yield msg
                 if msg.type == "stage_end":
                     break

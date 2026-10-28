@@ -9,30 +9,72 @@ type HealthState =
   | { status: "success"; data: HealthResponse }
   | { status: "error"; message: string };
 
+export async function fetchHealth(
+  baseUrl: string,
+  signal?: AbortSignal
+): Promise<HealthResponse> {
+  const normalizedBase = baseUrl.replace(/\/+$/, "");
+  const res = await fetch(`${normalizedBase}/api/health`, {
+    headers: {
+      Accept: "application/json",
+    },
+    signal,
+  });
+
+  if (!res.ok) {
+    throw new Error(`Server returned HTTP ${res.status}`);
+  }
+
+  const json = await res.json();
+  const parsed = HealthResponseSchema.parse(json);
+
+  if (!parsed.ok) {
+    throw new Error("Backend reported unhealthy status");
+  }
+
+  return parsed;
+}
+
 export default function Home() {
   const [health, setHealth] = useState<HealthState>({ status: "loading" });
 
   useEffect(() => {
+    let isMounted = true;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
     async function checkHealth() {
       try {
-        const res = await fetch(`${env.NEXT_PUBLIC_API_BASE_URL}/api/health`, {
-          headers: {
-            "Accept": "application/json",
-          },
-        });
-        if (!res.ok) {
-          throw new Error(`Server returned HTTP ${res.status}`);
+        const data = await fetchHealth(env.NEXT_PUBLIC_API_BASE_URL, controller.signal);
+        if (isMounted) {
+          setHealth({ status: "success", data });
         }
-        const json = await res.json();
-        const parsed = HealthResponseSchema.parse(json);
-        setHealth({ status: "success", data: parsed });
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Failed to connect to API server";
+        if (!isMounted) return;
+
+        let msg = "Failed to connect to API server";
+        if (err instanceof Error) {
+          if (err.name === "AbortError") {
+            msg = "Health check timed out after 5 seconds";
+          } else if (err.message.includes("Failed to fetch")) {
+            msg = "Unable to reach API server (network or CORS error)";
+          } else {
+            msg = err.message;
+          }
+        }
         setHealth({ status: "error", message: msg });
+      } finally {
+        clearTimeout(timeoutId);
       }
     }
 
     checkHealth();
+
+    return () => {
+      isMounted = false;
+      controller.abort();
+      clearTimeout(timeoutId);
+    };
   }, []);
 
   return (

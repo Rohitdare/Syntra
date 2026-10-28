@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from research_desk.stores.models import Source, SourceText
@@ -174,3 +174,9 @@ class SourceRepo:
         if source:
             await self.session.delete(source)
             await self.session.flush()
+
+    async def count_by_project(self, project_id: str) -> int:
+        """Return the count of sources in a project."""
+        stmt = select(func.count(Source.id)).where(Source.project_id == project_id)
+        res = await self.session.execute(stmt)
+        return int(res.scalar_one() or 0)

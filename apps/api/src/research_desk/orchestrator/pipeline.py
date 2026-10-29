@@ -12,12 +12,15 @@ import logging
 import os
 import uuid
 from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
 from typing import Any
 
-from research_desk.agents import collector
-from research_desk.agents.collector import AgentDeps, CollectorInput, CollectorRepos
+from research_desk.agents import analyst, collector
+from research_desk.agents.analyst import AnalystDeps
+from research_desk.agents.collector import AgentDeps, CollectorInput
 from research_desk.core.config import Settings, get_settings
 from research_desk.core.errors import AppError
+from research_desk.core.schemas import AnalystInput
 from research_desk.orchestrator.events import EventSink
 from research_desk.orchestrator.jobs import JobService
 from research_desk.orchestrator.runner import JobRunner, StageCallable
@@ -25,13 +28,32 @@ from research_desk.providers.embeddings import EmbeddingProvider
 from research_desk.providers.llm import CallContext, LLMProvider
 from research_desk.stores.db import DbSessionFactory
 from research_desk.stores.models import Job
+from research_desk.stores.repos.claims import ClaimRepo
 from research_desk.stores.repos.projects import ProjectRepo
 from research_desk.stores.repos.sources import SourceRepo
+from research_desk.stores.repos.verdicts import VerdictRepo
 from research_desk.stores.vector import VectorStore
 
 logger = logging.getLogger(__name__)
 
 AgentEmit = Callable[[str, dict[str, Any] | None, str | None], Coroutine[Any, Any, None]]
+
+STAGE_TO_AGENT: dict[str, str] = {
+    "collect": "collector",
+    "analyze": "analyst",
+    "critique": "critic",
+    "ask": "writer",
+}
+
+
+@dataclass(frozen=True)
+class Repos:
+    """Consolidated repositories container for pipeline stages and agents."""
+
+    projects: ProjectRepo
+    sources: SourceRepo
+    claims: ClaimRepo
+    verdicts: VerdictRepo
 
 
 async def run_stage(
@@ -72,20 +94,47 @@ async def run_stage(
                     )
 
     elif stage == "analyze":
-        source_id = getattr(inp, "source_id", None) or (
-            inp.get("source_id") if isinstance(inp, dict) else None
+        if isinstance(inp, dict):
+            p_id = inp.get("project_id") or ctx.project_id
+            s_id = inp.get("source_id")
+            if not p_id or not s_id:
+                raise AppError(
+                    "BAD_REQUEST", "project_id and source_id are required for analyze stage"
+                )
+            analyst_in = AnalystInput(project_id=p_id, source_id=s_id)
+        elif isinstance(inp, AnalystInput):
+            analyst_in = inp
+        else:
+            raise AppError(
+                "BAD_REQUEST",
+                f"Invalid input type for analyze stage: {type(inp).__name__}",
+            )
+
+        source = await deps.repos.sources.get(analyst_in.project_id, analyst_in.source_id)
+        if not source:
+            raise AppError(
+                "NOT_FOUND",
+                f"Source '{analyst_in.source_id}' not found in project '{analyst_in.project_id}'.",
+            )
+        if not source.stage_collected:
+            raise AppError(
+                "BAD_REQUEST",
+                f"Source '{analyst_in.source_id}' must be collected before analysis",
+            )
+
+        if not deps.llm:
+            raise AppError("INTERNAL", "LLMProvider is required for analyze stage")
+
+        analyst_deps = AnalystDeps(
+            repos=deps.repos,
+            vectors=deps.vectors,
+            embeddings=deps.embeddings,
+            llm=deps.llm,
+            cfg=deps.cfg,
         )
-        project_id = (
-            ctx.project_id
-            or getattr(inp, "project_id", None)
-            or (inp.get("project_id") if isinstance(inp, dict) else None)
-        )
-        if not source_id or not project_id:
-            raise AppError("BAD_REQUEST", "project_id and source_id are required for analyze stage")
-        source = await deps.repos.sources.get(project_id, source_id)
-        if not source or not source.stage_collected:
-            raise AppError("BAD_REQUEST", f"Source '{source_id}' must be collected before analysis")
-        raise AppError("NOT_IMPLEMENTED", "Stage 'analyze' will be implemented in Stage 4")
+
+        analyst_output = await analyst.run(analyst_in, analyst_deps, emit, ctx)
+        return analyst_output.model_dump(by_alias=True)
 
     elif stage == "critique":
         source_id = getattr(inp, "source_id", None) or (
@@ -134,9 +183,11 @@ def create_stage_callable(
 
     async def stage_coro(event_sink: EventSink) -> dict[str, Any]:
         async with sessionmaker() as session:
-            repos = CollectorRepos(
+            repos = Repos(
                 projects=ProjectRepo(session),
                 sources=SourceRepo(session),
+                claims=ClaimRepo(session),
+                verdicts=VerdictRepo(session),
             )
             deps = AgentDeps(
                 repos=repos,
@@ -158,7 +209,7 @@ def create_stage_callable(
                 elif type_ == "complete":
                     return
 
-                agent_name = "collector" if stage == "collect" else stage
+                agent_name = STAGE_TO_AGENT.get(stage, stage)
                 if ctx.job_id is not None:
                     await event_sink.emit(
                         job_id=ctx.job_id,

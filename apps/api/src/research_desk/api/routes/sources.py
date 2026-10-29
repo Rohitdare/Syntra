@@ -22,6 +22,7 @@ from research_desk.api.dependencies import (
 from research_desk.core.config import Settings, get_settings
 from research_desk.core.errors import AppError
 from research_desk.core.schemas import (
+    AnalystInput,
     ClaimItem,
     DeleteSourceResponse,
     ProjectSourceItem,
@@ -242,6 +243,87 @@ async def ingest_source(
             os.unlink(collector_input.pdf_path)
         except OSError:
             pass
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        async for msg in event_sink.subscribe(job.id, since_seq=0):
+            yield msg.to_ndjson() + "\n"
+
+    req_id = getattr(request.state, "request_id", None) or f"req_{uuid.uuid4().hex[:24]}"
+    headers = {
+        "X-Request-Id": req_id,
+        "X-Job-Id": str(job.id),
+    }
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="application/x-ndjson",
+        headers=headers,
+    )
+
+
+@router.post("/{source_id}/analyze", status_code=status.HTTP_200_OK)
+async def analyze_source(
+    source_id: str,
+    request: Request,
+    project: Project = Depends(get_owned_project),
+    current_user: User = Depends(get_current_user),
+    session: DbSession = Depends(get_db),
+    orchestrator: PipelineOrchestrator = Depends(get_pipeline_orchestrator),
+    event_sink: EventSink = Depends(get_event_sink),
+    idempotency_key_header: str | None = Header(None, alias="Idempotency-Key"),
+) -> StreamingResponse:
+    """Trigger the Analyst agent to extract summary, topics, and claims for a source."""
+    source_repo = SourceRepo(session)
+    source = await source_repo.get(project.id, source_id)
+    if source is None:
+        raise AppError(
+            code="NOT_FOUND",
+            message="Source not found",
+            http_status=404,
+            retryable=False,
+        )
+
+    if not source.stage_collected:
+        raise AppError(
+            code="BAD_REQUEST",
+            message=f"Source '{source_id}' must be collected before analysis",
+            http_status=400,
+            retryable=False,
+        )
+
+    idempotency_key = _validate_idempotency_key(idempotency_key_header)
+    input_hash = hashlib.sha256(
+        f"{project.id}:{source.id}:{source.content_hash}".encode("utf-8")
+    ).hexdigest()
+
+    # Reject if another conflicting job is active for this source,
+    # unless it matches the single-flight parameters for this exact analyze job
+    job_repo = JobRepo(session)
+    existing_single_flight = await job_repo.get_active_single_flight(
+        project_id=project.id,
+        stage="analyze",
+        source_id=source.id,
+        input_hash=input_hash,
+    )
+    if existing_single_flight is None and await job_repo.has_active_for_source(
+        project.id, source.id
+    ):
+        raise AppError(
+            code="JOB_ACTIVE",
+            message="A stage is still running for this source.",
+            http_status=409,
+            retryable=True,
+        )
+
+    job, _ = await orchestrator.run_job(
+        stage="analyze",
+        project_id=project.id,
+        user_id=current_user.id,
+        inp=AnalystInput(project_id=project.id, source_id=source.id),
+        input_hash=input_hash,
+        source_id=source.id,
+        idempotency_key=idempotency_key,
+    )
 
     async def event_generator() -> AsyncGenerator[str, None]:
         async for msg in event_sink.subscribe(job.id, since_seq=0):

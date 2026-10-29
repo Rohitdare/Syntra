@@ -69,7 +69,7 @@ class CollectorRepos:
 class AgentDeps:
     """Injected dependencies for agents."""
 
-    repos: CollectorRepos
+    repos: Any
     vectors: VectorStore
     embeddings: EmbeddingProvider
     llm: LLMProvider | None = None

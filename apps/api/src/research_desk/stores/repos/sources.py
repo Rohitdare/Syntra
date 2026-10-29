@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Any, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from research_desk.stores.models import Source, SourceText
+
+_UNSET: Any = object()
 
 
 class SourceRepo:
@@ -135,7 +137,7 @@ class SourceRepo:
         claim_count: int | None = None,
         summary: str | None = None,
         topics: list[str] | None = None,
-        last_error: str | None = None,
+        last_error: str | None | Any = _UNSET,
         title: str | None = None,
     ) -> None:
         """Update stage completion booleans and derived counts."""
@@ -160,7 +162,7 @@ class SourceRepo:
                 source.summary = summary
             if topics is not None:
                 source.topics = topics
-            if last_error is not None:
+            if last_error is not _UNSET:
                 source.last_error = last_error
             if title is not None:
                 source.title = title

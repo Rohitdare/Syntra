@@ -11,6 +11,7 @@ import pytest
 
 from research_desk.agents.collector import CollectorInput
 from research_desk.core.errors import AppError
+from research_desk.core.schemas import AnalystInput
 from research_desk.orchestrator.events import EventSink
 from research_desk.orchestrator.jobs import JobService
 from research_desk.orchestrator.pipeline import (
@@ -292,3 +293,141 @@ async def test_create_stage_callable_emits_mapped_wire_events(mock_sessionmaker:
     emitted_types = [call.kwargs.get("type_") for call in mock_event_sink.emit.call_args_list]
     # start -> stage_start, status -> step, result -> result, complete -> ignored
     assert emitted_types == ["stage_start", "step", "result"]
+
+
+@pytest.mark.asyncio
+async def test_run_stage_analyze_success() -> None:
+    """run_stage('analyze') calls analyst.run and returns serialized output."""
+    mock_deps = MagicMock()
+    collected_source = Source(
+        project_id="prj_test001",
+        id="src_001",
+        tag="S1",
+        kind="text",
+        title="Sample Document",
+        origin="test",
+        content_hash="h123",
+        stage_collected=True,
+        stage_analyzed=False,
+    )
+    mock_deps.repos.sources.get = AsyncMock(return_value=collected_source)
+    mock_deps.llm = MagicMock()
+
+    ctx = CallContext(user_id=uuid.uuid4(), project_id="prj_test001", job_id=uuid.uuid4())
+    inp = AnalystInput(project_id="prj_test001", source_id="src_001")
+
+    mock_analyst_output = MagicMock()
+    mock_analyst_output.model_dump.return_value = {
+        "claimCount": 4,
+        "topics": ["Safety", "Alignment"],
+    }
+
+    events: list[str] = []
+
+    async def mock_emit(t: str, d: dict[str, Any] | None, m: str | None) -> None:
+        events.append(t)
+
+    from unittest.mock import patch
+
+    with patch(
+        "research_desk.orchestrator.pipeline.analyst.run",
+        AsyncMock(return_value=mock_analyst_output),
+    ):
+        res = await run_stage("analyze", inp, mock_deps, mock_emit, ctx)
+
+    assert res == {"claimCount": 4, "topics": ["Safety", "Alignment"]}
+
+
+@pytest.mark.asyncio
+async def test_run_stage_analyze_requires_llm() -> None:
+    """run_stage('analyze') raises INTERNAL if LLM provider is not configured."""
+    mock_deps = MagicMock()
+    collected_source = Source(
+        project_id="prj_test001",
+        id="src_001",
+        tag="S1",
+        kind="text",
+        title="Sample",
+        origin="test",
+        content_hash="h123",
+        stage_collected=True,
+    )
+    mock_deps.repos.sources.get = AsyncMock(return_value=collected_source)
+    mock_deps.llm = None  # No LLM provider
+
+    ctx = CallContext(user_id=uuid.uuid4(), project_id="prj_test001")
+    inp = AnalystInput(project_id="prj_test001", source_id="src_001")
+
+    async def mock_emit(t: str, d: dict[str, Any] | None, m: str | None) -> None:
+        pass
+
+    with pytest.raises(AppError) as exc_info:
+        await run_stage("analyze", inp, mock_deps, mock_emit, ctx)
+
+    assert exc_info.value.code == "INTERNAL"
+    assert "LLMProvider is required" in str(exc_info.value.message)
+
+
+@pytest.mark.asyncio
+async def test_create_stage_callable_analyze_emits_analyst_agent(
+    mock_sessionmaker: MagicMock,
+) -> None:
+    """create_stage_callable for analyze passes agent='analyst' to EventSink."""
+    job_id = uuid.uuid4()
+    ctx = CallContext(user_id=uuid.uuid4(), project_id="prj_test001", job_id=job_id)
+    mock_event_sink = MagicMock(spec=EventSink)
+    mock_event_sink.emit = AsyncMock()
+
+    stage_coro = create_stage_callable(
+        stage="analyze",
+        inp=AnalystInput(project_id="prj_test001", source_id="src_001"),
+        ctx=ctx,
+        sessionmaker=mock_sessionmaker,
+        vectors=MagicMock(),
+        embeddings=MagicMock(),
+        llm=MagicMock(),
+    )
+
+    from unittest.mock import patch
+
+    collected_source = Source(
+        project_id="prj_test001",
+        id="src_001",
+        tag="S1",
+        kind="text",
+        title="Sample Document",
+        origin="test",
+        content_hash="h123",
+        stage_collected=True,
+    )
+
+    mock_out = MagicMock()
+    mock_out.model_dump.return_value = {"claimCount": 3, "topics": ["Test"]}
+
+    async def fake_analyst_run(inp: Any, deps: Any, emit: Any, ctx: Any) -> Any:
+        await emit("start", None, "Analyzing")
+        await emit("doc_read", {"count": 1000}, "Reading text")
+        await emit("llm_call", {"tier": "fast"}, "Extracting")
+        await emit("status", None, "Generating embeddings")
+        await emit("doc_write", {"count": 3}, "Stored claims")
+        await emit("result", {"claimCount": 3}, "Done")
+        await emit("complete", None, "Finished")
+        return mock_out
+
+    with (
+        patch(
+            "research_desk.stores.repos.sources.SourceRepo.get",
+            AsyncMock(return_value=collected_source),
+        ),
+        patch("research_desk.orchestrator.pipeline.analyst.run", side_effect=fake_analyst_run),
+    ):
+        res = await stage_coro(mock_event_sink)
+
+    assert res == {"claimCount": 3, "topics": ["Test"]}
+
+    # Verify agent name on all emitted events is "analyst"
+    for call in mock_event_sink.emit.call_args_list:
+        assert call.kwargs.get("agent") == "analyst"
+
+    emitted_types = [call.kwargs.get("type_") for call in mock_event_sink.emit.call_args_list]
+    assert emitted_types == ["stage_start", "doc_read", "llm_call", "step", "doc_write", "result"]

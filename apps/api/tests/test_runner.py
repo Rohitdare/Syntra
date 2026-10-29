@@ -11,6 +11,7 @@ import pytest
 from research_desk.core.errors import AppError
 from research_desk.orchestrator.events import EventSink
 from research_desk.orchestrator.runner import InProcessRunner
+from research_desk.stores.models import Job
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +20,7 @@ def mock_job_repo_ops():
     with (
         patch("research_desk.orchestrator.runner.JobRepo.update_status", new=AsyncMock()),
         patch("research_desk.orchestrator.runner.JobRepo.heartbeat", new=AsyncMock()),
+        patch("research_desk.orchestrator.runner.JobRepo.get", new=AsyncMock(return_value=None)),
     ):
         yield
 
@@ -99,4 +101,94 @@ async def test_runner_stage_timeout(mock_sessionmaker: MagicMock) -> None:
     assert "error" in emitted_types
     assert "stage_end" in emitted_types
 
+    await runner.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runner_updates_source_last_error_on_failure(mock_sessionmaker: MagicMock) -> None:
+    """When a job fails, the runner updates source.last_error with the error code."""
+    event_sink = MagicMock(spec=EventSink)
+    event_sink.emit = AsyncMock()
+
+    runner = InProcessRunner(
+        sessionmaker=mock_sessionmaker,
+        event_sink=event_sink,
+        active_cap=2,
+        stage_timeout_s=5.0,
+    )
+
+    job_id = uuid.uuid4()
+    mock_job = Job(
+        id=job_id,
+        project_id="prj_test001",
+        source_id="src_test001",
+        user_id=uuid.uuid4(),
+        stage="analyze",
+        status="running",
+        input_hash="hash_1",
+    )
+
+    async def failing_stage(sink: EventSink) -> dict[str, str]:
+        raise AppError("LLM_QUOTA", "Quota exceeded", http_status=503, retryable=True)
+
+    with (
+        patch("research_desk.orchestrator.runner.JobRepo.get", AsyncMock(return_value=mock_job)),
+        patch(
+            "research_desk.stores.repos.sources.SourceRepo.update_stage_flags",
+            AsyncMock(),
+        ) as mock_update_flags,
+    ):
+        await runner.submit(job_id, failing_stage)
+        await asyncio.sleep(0.1)
+
+    mock_update_flags.assert_awaited_once_with(
+        project_id="prj_test001",
+        source_id="src_test001",
+        last_error="LLM_QUOTA",
+    )
+    await runner.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runner_clears_source_last_error_on_success(mock_sessionmaker: MagicMock) -> None:
+    """When a job succeeds, the runner clears source.last_error to None."""
+    event_sink = MagicMock(spec=EventSink)
+    event_sink.emit = AsyncMock()
+
+    runner = InProcessRunner(
+        sessionmaker=mock_sessionmaker,
+        event_sink=event_sink,
+        active_cap=2,
+        stage_timeout_s=5.0,
+    )
+
+    job_id = uuid.uuid4()
+    mock_job = Job(
+        id=job_id,
+        project_id="prj_test001",
+        source_id="src_test001",
+        user_id=uuid.uuid4(),
+        stage="analyze",
+        status="running",
+        input_hash="hash_1",
+    )
+
+    async def successful_stage(sink: EventSink) -> dict[str, str]:
+        return {"claimCount": "3"}
+
+    with (
+        patch("research_desk.orchestrator.runner.JobRepo.get", AsyncMock(return_value=mock_job)),
+        patch(
+            "research_desk.stores.repos.sources.SourceRepo.update_stage_flags",
+            AsyncMock(),
+        ) as mock_update_flags,
+    ):
+        await runner.submit(job_id, successful_stage)
+        await asyncio.sleep(0.1)
+
+    mock_update_flags.assert_awaited_once_with(
+        project_id="prj_test001",
+        source_id="src_test001",
+        last_error=None,
+    )
     await runner.shutdown()

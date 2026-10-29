@@ -15,6 +15,7 @@ from research_desk.core.errors import AppError
 from research_desk.orchestrator.events import EventSink
 from research_desk.stores.db import DbSessionFactory
 from research_desk.stores.repos.jobs import JobRepo
+from research_desk.stores.repos.sources import SourceRepo
 
 logger = logging.getLogger(__name__)
 
@@ -113,11 +114,19 @@ class InProcessRunner(JobRunner):
             async with self.sessionmaker() as session:
                 async with session.begin():
                     repo = JobRepo(session)
+                    job = await repo.get(job_id)
                     await repo.update_status(
                         job_id,
                         status="succeeded",
                         result=result,
                     )
+                    if job and isinstance(job.source_id, str) and isinstance(job.project_id, str):
+                        source_repo = SourceRepo(session)
+                        await source_repo.update_stage_flags(
+                            project_id=job.project_id,
+                            source_id=job.source_id,
+                            last_error=None,
+                        )
 
             await self.event_sink.emit(
                 job_id=job_id,
@@ -132,12 +141,20 @@ class InProcessRunner(JobRunner):
             async with self.sessionmaker() as session:
                 async with session.begin():
                     repo = JobRepo(session)
+                    job = await repo.get(job_id)
                     await repo.update_status(
                         job_id,
                         status="failed",
                         error_code="TIMEOUT",
                         error_message="Stage exceeded maximum execution time",
                     )
+                    if job and isinstance(job.source_id, str) and isinstance(job.project_id, str):
+                        source_repo = SourceRepo(session)
+                        await source_repo.update_stage_flags(
+                            project_id=job.project_id,
+                            source_id=job.source_id,
+                            last_error="TIMEOUT",
+                        )
 
             await self.event_sink.emit(
                 job_id=job_id,
@@ -165,12 +182,20 @@ class InProcessRunner(JobRunner):
             async with self.sessionmaker() as session:
                 async with session.begin():
                     repo = JobRepo(session)
+                    job = await repo.get(job_id)
                     await repo.update_status(
                         job_id,
                         status="failed",
                         error_code=err_code,
                         error_message=err_msg,
                     )
+                    if job and isinstance(job.source_id, str) and isinstance(job.project_id, str):
+                        source_repo = SourceRepo(session)
+                        await source_repo.update_stage_flags(
+                            project_id=job.project_id,
+                            source_id=job.source_id,
+                            last_error=err_code,
+                        )
 
             await self.event_sink.emit(
                 job_id=job_id,

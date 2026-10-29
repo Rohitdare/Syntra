@@ -660,3 +660,360 @@ async def test_ingest_source_duplicate_joins_existing_job(
     # The temporary file created during this request should be deleted because is_new=False
     assert len(created_temp_path) == 1
     assert not os.path.exists(created_temp_path[0])
+
+
+@pytest.mark.asyncio
+async def test_analyze_source_success(test_user: User, test_project: Project) -> None:
+    """POST /sources/{id}/analyze triggers analyst agent and streams NDJSON events."""
+    app = create_app(get_test_settings())
+    mock_session = AsyncMock()
+
+    source = Source(
+        project_id=test_project.id,
+        id="src_an01",
+        tag="S1",
+        kind="pdf",
+        title="Test Source",
+        origin="upload.pdf",
+        content_hash="hash_content_01",
+        stage_collected=True,
+        stage_analyzed=False,
+    )
+
+    job_id = uuid.uuid4()
+    job = Job(
+        id=job_id,
+        project_id=test_project.id,
+        source_id="src_an01",
+        user_id=test_user.id,
+        stage="analyze",
+        status="running",
+        input_hash="hash_analyze_01",
+    )
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    events = [
+        EventMessage(
+            job_id=job_id,
+            seq=1,
+            ts=now,
+            stage="analyze",
+            agent="analyst",
+            type="stage_start",
+            message="Analyzing source content...",
+        ),
+        EventMessage(
+            job_id=job_id,
+            seq=2,
+            ts=now,
+            stage="analyze",
+            agent="analyst",
+            type="doc_read",
+            message="Reading cleaned source text...",
+            data={"count": 1500, "docType": "source_text"},
+        ),
+        EventMessage(
+            job_id=job_id,
+            seq=3,
+            ts=now,
+            stage="analyze",
+            agent="analyst",
+            type="llm_call",
+            message="Extracting claims and summary...",
+            data={"tier": "fast"},
+        ),
+        EventMessage(
+            job_id=job_id,
+            seq=4,
+            ts=now,
+            stage="analyze",
+            agent="analyst",
+            type="result",
+            message="Analysis complete.",
+            data={"claimCount": 5, "topics": ["Safety", "Governance"]},
+        ),
+        EventMessage(
+            job_id=job_id,
+            seq=5,
+            ts=now,
+            stage="system",
+            agent="runner",
+            type="stage_end",
+            data={"status": "succeeded"},
+        ),
+    ]
+
+    async def fake_subscribe(*args: object, **kwargs: object) -> AsyncGenerator[EventMessage, None]:
+        for e in events:
+            yield e
+
+    mock_event_sink = AsyncMock(spec=EventSink)
+    mock_event_sink.subscribe = fake_subscribe
+
+    mock_orchestrator = AsyncMock(spec=PipelineOrchestrator)
+    mock_orchestrator.run_job.return_value = (job, True)
+
+    app.dependency_overrides[get_current_user] = lambda: test_user
+    app.dependency_overrides[get_db] = lambda: mock_session
+    app.dependency_overrides[get_owned_project] = lambda: test_project
+    app.dependency_overrides[get_pipeline_orchestrator] = lambda: mock_orchestrator
+    app.dependency_overrides[get_event_sink] = lambda: mock_event_sink
+
+    with (
+        pytest.MonkeyPatch.context() as mp,
+    ):
+        mp.setattr(
+            "research_desk.api.routes.sources.SourceRepo.get",
+            AsyncMock(return_value=source),
+        )
+        mp.setattr(
+            "research_desk.api.routes.sources.JobRepo.get_active_single_flight",
+            AsyncMock(return_value=None),
+        )
+        mp.setattr(
+            "research_desk.api.routes.sources.JobRepo.has_active_for_source",
+            AsyncMock(return_value=False),
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                f"/api/projects/{test_project.id}/sources/{source.id}/analyze",
+                headers={"Idempotency-Key": "idemp_an_01"},
+            )
+
+    assert resp.status_code == 200
+    assert resp.headers["X-Job-Id"] == str(job_id)
+    assert resp.headers.get("X-Request-Id") is not None
+    assert "application/x-ndjson" in resp.headers["content-type"]
+
+    lines = [json.loads(line) for line in resp.text.strip().split("\n") if line.strip()]
+    assert len(lines) == 5
+    assert lines[0]["type"] == "stage_start"
+    assert lines[0]["agent"] == "analyst"
+    assert lines[3]["type"] == "result"
+    assert lines[3]["data"]["claimCount"] == 5
+    assert lines[4]["type"] == "stage_end"
+    assert lines[4]["data"]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_analyze_source_not_found(test_user: User, test_project: Project) -> None:
+    """POST /sources/{id}/analyze returns 404 NOT_FOUND if source does not exist."""
+    app = create_app(get_test_settings())
+    mock_session = AsyncMock()
+
+    app.dependency_overrides[get_current_user] = lambda: test_user
+    app.dependency_overrides[get_db] = lambda: mock_session
+    app.dependency_overrides[get_owned_project] = lambda: test_project
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "research_desk.api.routes.sources.SourceRepo.get",
+            AsyncMock(return_value=None),
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                f"/api/projects/{test_project.id}/sources/src_missing/analyze",
+            )
+
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_analyze_source_not_collected(test_user: User, test_project: Project) -> None:
+    """POST /sources/{id}/analyze returns 400 BAD_REQUEST if source is not collected yet."""
+    app = create_app(get_test_settings())
+    mock_session = AsyncMock()
+
+    uncollected_source = Source(
+        project_id=test_project.id,
+        id="src_uncol01",
+        tag="S1",
+        kind="pdf",
+        title="Uncollected Source",
+        origin="upload.pdf",
+        content_hash="hash_01",
+        stage_collected=False,
+    )
+
+    app.dependency_overrides[get_current_user] = lambda: test_user
+    app.dependency_overrides[get_db] = lambda: mock_session
+    app.dependency_overrides[get_owned_project] = lambda: test_project
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "research_desk.api.routes.sources.SourceRepo.get",
+            AsyncMock(return_value=uncollected_source),
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                f"/api/projects/{test_project.id}/sources/{uncollected_source.id}/analyze",
+            )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "BAD_REQUEST"
+    assert "must be collected" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_source_conflict_when_other_stage_active(
+    test_user: User, test_project: Project
+) -> None:
+    """POST /sources/{id}/analyze returns 409 JOB_ACTIVE if another stage is running."""
+    app = create_app(get_test_settings())
+    mock_session = AsyncMock()
+
+    collected_source = Source(
+        project_id=test_project.id,
+        id="src_active01",
+        tag="S1",
+        kind="pdf",
+        title="Source",
+        origin="upload.pdf",
+        content_hash="hash_01",
+        stage_collected=True,
+    )
+
+    app.dependency_overrides[get_current_user] = lambda: test_user
+    app.dependency_overrides[get_db] = lambda: mock_session
+    app.dependency_overrides[get_owned_project] = lambda: test_project
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "research_desk.api.routes.sources.SourceRepo.get",
+            AsyncMock(return_value=collected_source),
+        )
+        mp.setattr(
+            "research_desk.api.routes.sources.JobRepo.get_active_single_flight",
+            AsyncMock(return_value=None),
+        )
+        # Another stage is running for this source
+        mp.setattr(
+            "research_desk.api.routes.sources.JobRepo.has_active_for_source",
+            AsyncMock(return_value=True),
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                f"/api/projects/{test_project.id}/sources/{collected_source.id}/analyze",
+            )
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "JOB_ACTIVE"
+
+
+@pytest.mark.asyncio
+async def test_analyze_source_single_flight_attach(test_user: User, test_project: Project) -> None:
+    """POST /sources/{id}/analyze attaches to active analyze job without error."""
+    app = create_app(get_test_settings())
+    mock_session = AsyncMock()
+
+    collected_source = Source(
+        project_id=test_project.id,
+        id="src_sf01",
+        tag="S1",
+        kind="pdf",
+        title="Source",
+        origin="upload.pdf",
+        content_hash="hash_01",
+        stage_collected=True,
+    )
+
+    job_id = uuid.uuid4()
+    existing_job = Job(
+        id=job_id,
+        project_id=test_project.id,
+        source_id="src_sf01",
+        user_id=test_user.id,
+        stage="analyze",
+        status="running",
+        input_hash="hash_sf",
+    )
+
+    ev = EventMessage(
+        job_id=job_id,
+        seq=1,
+        ts=datetime.datetime.now(datetime.timezone.utc),
+        stage="analyze",
+        agent="analyst",
+        type="step",
+        message="Attached to existing analysis",
+    )
+
+    async def fake_subscribe(*args: object, **kwargs: object) -> AsyncGenerator[EventMessage, None]:
+        yield ev
+
+    mock_event_sink = AsyncMock(spec=EventSink)
+    mock_event_sink.subscribe = fake_subscribe
+
+    mock_orchestrator = AsyncMock(spec=PipelineOrchestrator)
+    mock_orchestrator.run_job.return_value = (existing_job, False)  # is_new = False
+
+    app.dependency_overrides[get_current_user] = lambda: test_user
+    app.dependency_overrides[get_db] = lambda: mock_session
+    app.dependency_overrides[get_owned_project] = lambda: test_project
+    app.dependency_overrides[get_pipeline_orchestrator] = lambda: mock_orchestrator
+    app.dependency_overrides[get_event_sink] = lambda: mock_event_sink
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "research_desk.api.routes.sources.SourceRepo.get",
+            AsyncMock(return_value=collected_source),
+        )
+        mp.setattr(
+            "research_desk.api.routes.sources.JobRepo.get_active_single_flight",
+            AsyncMock(return_value=existing_job),
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                f"/api/projects/{test_project.id}/sources/{collected_source.id}/analyze",
+            )
+
+    assert resp.status_code == 200
+    assert resp.headers["X-Job-Id"] == str(job_id)
+    lines = [json.loads(line) for line in resp.text.strip().split("\n") if line.strip()]
+    assert len(lines) == 1
+    assert lines[0]["message"] == "Attached to existing analysis"
+
+
+@pytest.mark.asyncio
+async def test_analyze_source_invalid_idempotency_key(
+    test_user: User, test_project: Project
+) -> None:
+    """POST /sources/{id}/analyze returns 400 BAD_REQUEST if Idempotency-Key contains non-ASCII."""
+    app = create_app(get_test_settings())
+    mock_session = AsyncMock()
+
+    collected_source = Source(
+        project_id=test_project.id,
+        id="src_key01",
+        tag="S1",
+        kind="pdf",
+        title="Source",
+        origin="upload.pdf",
+        content_hash="hash_01",
+        stage_collected=True,
+    )
+
+    app.dependency_overrides[get_current_user] = lambda: test_user
+    app.dependency_overrides[get_db] = lambda: mock_session
+    app.dependency_overrides[get_owned_project] = lambda: test_project
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "research_desk.api.routes.sources.SourceRepo.get",
+            AsyncMock(return_value=collected_source),
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                f"/api/projects/{test_project.id}/sources/{collected_source.id}/analyze",
+                headers={"Idempotency-Key": "invalid key with spaces and \x00"},
+            )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "BAD_REQUEST"

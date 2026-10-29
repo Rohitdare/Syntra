@@ -111,6 +111,7 @@ export const ClaimItemSchema = z.object({
 export const SourceDetailResponseSchema = z.object({
   source: ProjectSourceItemSchema,
   summary: z.string().nullable().optional(),
+  topics: z.array(z.string()).default([]),
   claims: z.array(ClaimItemSchema).default([]),
   verdicts: z.array(z.record(z.string(), z.unknown())).default([]),
 });

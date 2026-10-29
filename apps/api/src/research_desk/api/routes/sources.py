@@ -391,6 +391,7 @@ async def get_source(
             last_error=source.last_error,
         ),
         summary=source.summary,
+        topics=list(source.topics or []),
         claims=claim_items,
         verdicts=[],
     )

@@ -8,6 +8,8 @@ export interface SourceListProps {
   onOpenAddModal: () => void;
   onInspectSource: (sourceId: string) => void;
   onRequestDeleteSource: (sourceId: string, title: string) => void;
+  onTriggerAnalyze?: (sourceId: string, title?: string) => void;
+  analyzingSourceId?: string | null;
 }
 
 export function SourceList({
@@ -15,6 +17,8 @@ export function SourceList({
   onOpenAddModal,
   onInspectSource,
   onRequestDeleteSource,
+  onTriggerAnalyze,
+  analyzingSourceId,
 }: SourceListProps) {
   function renderKindIcon(kind: string) {
     switch (kind.toLowerCase()) {
@@ -66,33 +70,34 @@ export function SourceList({
 
         {/* 3 Supported Modalities Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-3xl mx-auto text-left">
-          <div className="p-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] space-y-2 hover:border-[var(--color-primary)]/40 transition-colors">
-            <div className="w-8 h-8 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] flex items-center justify-center">
-              {renderKindIcon("pdf")}
+          {[
+            {
+              kind: "pdf",
+              title: "PDF Documents",
+              desc: "Upload research papers and reports (up to 8 MB). Text is cleaned, headers removed, and paragraphs chunked into vector memory.",
+            },
+            {
+              kind: "url",
+              title: "Web Articles",
+              desc: "Ingest public URLs. Extracted through safe server-side SSRF validation with DNS pinning and readable text parsing.",
+            },
+            {
+              kind: "text",
+              title: "Pasted Text",
+              desc: "Paste transcripts, excerpts, or raw notes (500 to 400,000 chars) directly into evidence memory.",
+            },
+          ].map((m) => (
+            <div
+              key={m.kind}
+              className="p-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] space-y-2 hover:border-[var(--color-primary)]/40 transition-colors"
+            >
+              <div className="w-8 h-8 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] flex items-center justify-center">
+                {renderKindIcon(m.kind)}
+              </div>
+              <h4 className="text-xs font-bold text-[var(--color-text-primary)]">{m.title}</h4>
+              <p className="text-[11px] text-[var(--color-text-secondary)] leading-relaxed">{m.desc}</p>
             </div>
-            <h4 className="text-xs font-bold text-[var(--color-text-primary)]">PDF Documents</h4>
-            <p className="text-[11px] text-[var(--color-text-secondary)] leading-relaxed">
-              Upload research papers and reports (up to 8 MB). Text is cleaned, headers removed, and paragraphs chunked into vector memory.
-            </p>
-          </div>
-          <div className="p-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] space-y-2 hover:border-[var(--color-primary)]/40 transition-colors">
-            <div className="w-8 h-8 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] flex items-center justify-center">
-              {renderKindIcon("url")}
-            </div>
-            <h4 className="text-xs font-bold text-[var(--color-text-primary)]">Web Articles</h4>
-            <p className="text-[11px] text-[var(--color-text-secondary)] leading-relaxed">
-              Ingest public URLs. Extracted through safe server-side SSRF validation with DNS pinning and readable text parsing.
-            </p>
-          </div>
-          <div className="p-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] space-y-2 hover:border-[var(--color-primary)]/40 transition-colors">
-            <div className="w-8 h-8 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] flex items-center justify-center">
-              {renderKindIcon("text")}
-            </div>
-            <h4 className="text-xs font-bold text-[var(--color-text-primary)]">Pasted Text</h4>
-            <p className="text-[11px] text-[var(--color-text-secondary)] leading-relaxed">
-              Paste transcripts, excerpts, or raw notes (500 to 400,000 chars) directly into evidence memory.
-            </p>
-          </div>
+          ))}
         </div>
 
         <button
@@ -182,6 +187,14 @@ export function SourceList({
                     <span>✓</span>
                     <span>Analyzed</span>
                   </span>
+                ) : src.lastError ? (
+                  <span
+                    className="px-2 py-0.5 rounded bg-[var(--color-error-soft)] text-[var(--color-error)] font-medium flex items-center space-x-1 border border-[var(--color-error)]/20"
+                    title={`Analysis Error: ${src.lastError}`}
+                  >
+                    <span>✕</span>
+                    <span>Analysis Failed</span>
+                  </span>
                 ) : (
                   <span className="px-2 py-0.5 rounded bg-[var(--color-surface)] text-[var(--color-text-muted)] border border-[var(--color-border)]">
                     Unanalyzed
@@ -201,6 +214,20 @@ export function SourceList({
 
               {/* Action Buttons */}
               <div className="flex items-center space-x-1.5 pl-2 border-l border-[var(--color-border)]">
+                {/* Trigger / Retry Analysis CTA if collected but not analyzed */}
+                {src.stages.collected && !src.stages.analyzed && onTriggerAnalyze && (
+                  <button
+                    type="button"
+                    disabled={analyzingSourceId === src.id}
+                    onClick={() => onTriggerAnalyze(src.id, src.title)}
+                    className="px-2.5 py-1 text-xs font-semibold text-[var(--color-primary)] hover:bg-[var(--color-primary-soft)] rounded-md border border-[var(--color-primary)]/40 transition-colors cursor-pointer disabled:opacity-50 flex items-center space-x-1"
+                  >
+                    {analyzingSourceId === src.id && (
+                      <span className="w-2.5 h-2.5 rounded-full border-2 border-[var(--color-primary)] border-t-transparent animate-spin" />
+                    )}
+                    <span>{src.lastError ? "Retry Analysis" : "Analyze"}</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => onInspectSource(src.id)}

@@ -397,6 +397,7 @@ async def test_get_source_detail_success(test_user: User, test_project: Project)
         chunk_count=10,
         claim_count=5,
         summary="Overview of deep learning architectures",
+        topics=["Transformers", "Deep Learning"],
         stage_collected=True,
         stage_analyzed=True,
         stage_critiqued=True,
@@ -436,6 +437,7 @@ async def test_get_source_detail_success(test_user: User, test_project: Project)
     assert data["source"]["id"] == "src_detail01"
     assert data["source"]["tag"] == "S1"
     assert data["summary"] == "Overview of deep learning architectures"
+    assert data["topics"] == ["Transformers", "Deep Learning"]
     assert data["source"]["stages"]["critiqued"] is True
     assert len(data["claims"]) == 1
     assert data["claims"][0]["id"] == "clm_detail01_01"

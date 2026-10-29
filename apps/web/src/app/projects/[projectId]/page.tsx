@@ -9,6 +9,7 @@ import {
   deleteProject,
   deleteSource,
   ingestSourceStream,
+  analyzeSourceStream,
   streamJobEvents,
   IngestSourceInput,
   ProjectDetailResponse,
@@ -18,6 +19,7 @@ import { StreamEvent } from "@/lib/api/schemas";
 import { SourceList } from "@/components/sources/SourceList";
 import { AddSourceModal } from "@/components/sources/AddSourceModal";
 import { SourceDrawer } from "@/components/sources/SourceDrawer";
+import { InsightsView } from "@/components/insights/InsightsView";
 import { StreamTray, StreamConnectionStatus } from "@/components/streaming/StreamTray";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
@@ -26,7 +28,7 @@ interface ProjectPageProps {
 }
 
 function generateIdempotencyKey(): string {
-  return `idemp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  return `idemp_${crypto.randomUUID()}`;
 }
 
 function ProjectWorkspaceContent({ params }: ProjectPageProps) {
@@ -57,12 +59,15 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
   // Streaming State
   const [isStreamTrayOpen, setIsStreamTrayOpen] = useState(false);
   const [streamSourceTitle, setStreamSourceTitle] = useState("");
+  const [streamStageName, setStreamStageName] = useState<string>("Collector");
   const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<StreamConnectionStatus>("connecting");
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [analyzingSourceId, setAnalyzingSourceId] = useState<string | null>(null);
   const activeJobIdRef = useRef<string | null>(null);
   const lastSeqRef = useRef<number>(0);
   const activeInputRef = useRef<IngestSourceInput | null>(null);
+  const failedSourceIdRef = useRef<string | null>(null);
   const terminalReachedRef = useRef<boolean>(false);
 
   // Attempt reconnection with exponential backoff up to 3 times
@@ -96,7 +101,7 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
             const isSuccess = event.data?.status === "succeeded";
             setConnectionStatus(isSuccess ? "succeeded" : "failed");
             if (isSuccess) {
-              getProject(projectId).then(setDetail).catch(() => {});
+              getProject(projectId).then(setDetail).catch(() => { });
             } else {
               setStreamError("Ingestion pipeline finished with failed status.");
             }
@@ -189,16 +194,20 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
     };
   }, [projectId]);
 
-  // Handle source ingestion submission
+  // Handle source ingestion submission with automatic Collector -> Analyst chaining
   async function handleAddSource(input: IngestSourceInput) {
     setIsSubmittingSource(true);
     activeInputRef.current = input;
     const title = input.title || input.file?.name || input.url || "New Evidence Source";
     setStreamSourceTitle(title);
+    setStreamStageName("Collector");
     terminalReachedRef.current = false;
     lastSeqRef.current = 0;
+    failedSourceIdRef.current = null;
 
     const idempotencyKey = generateIdempotencyKey();
+    let collectedSourceId: string | null = null;
+    let collectorSucceeded = false;
 
     try {
       await ingestSourceStream({
@@ -233,20 +242,85 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
             return [...prev, event];
           });
 
+          if (event.type === "result" && event.data?.sourceId) {
+            collectedSourceId = String(event.data.sourceId);
+          }
+
           if (event.type === "stage_end") {
-            terminalReachedRef.current = true;
             const isSuccess = event.data?.status === "succeeded";
-            setConnectionStatus(isSuccess ? "succeeded" : "failed");
             if (isSuccess) {
-              loadProject();
+              collectorSucceeded = true;
             } else {
+              terminalReachedRef.current = true;
+              setConnectionStatus("failed");
               setStreamError("Ingestion stage finished with failed status.");
+              loadProject();
             }
+            // If isSuccess, do NOT set terminalReachedRef yet; we will chain into Analyst below!
           } else if (event.type === "error") {
             setStreamError(event.message || "Collector stage reported an error.");
           }
         },
       });
+
+      // If Collector explicitly confirmed success and produced a sourceId, auto-chain to Analyst!
+      if (collectorSucceeded && collectedSourceId) {
+        await loadProject();
+        setStreamStageName("Analyst");
+        setConnectionStatus("live");
+        setStreamError(null);
+        failedSourceIdRef.current = collectedSourceId;
+
+        const analyzeIdempotencyKey = generateIdempotencyKey();
+        try {
+          await analyzeSourceStream({
+            projectId,
+            sourceId: collectedSourceId,
+            idempotencyKey: analyzeIdempotencyKey,
+            onJobId: (analyzeJobId) => {
+              activeJobIdRef.current = analyzeJobId;
+            },
+            onEvent: (event) => {
+              if (event.type === "heartbeat") return;
+              if (terminalReachedRef.current) return;
+
+              setConnectionStatus("live");
+              lastSeqRef.current = Math.max(lastSeqRef.current, event.seq);
+              setStreamEvents((prev) => {
+                if (prev.some((e) => e.seq === event.seq && e.type === event.type)) {
+                  return prev;
+                }
+                return [...prev, event];
+              });
+
+              if (event.type === "stage_end") {
+                terminalReachedRef.current = true;
+                const isSuccess = event.data?.status === "succeeded";
+                setConnectionStatus(isSuccess ? "succeeded" : "failed");
+                if (isSuccess) {
+                  failedSourceIdRef.current = null;
+                } else {
+                  setStreamError("Analyst stage finished with failed status.");
+                }
+                loadProject();
+              } else if (event.type === "error") {
+                setStreamError(event.message || "Analyst stage reported an error.");
+              }
+            },
+          });
+        } catch (analyzeErr: unknown) {
+          terminalReachedRef.current = true;
+          setConnectionStatus("failed");
+          const msg =
+            analyzeErr instanceof ApiClientError
+              ? `${analyzeErr.code}: ${analyzeErr.message}`
+              : analyzeErr instanceof Error
+                ? analyzeErr.message
+                : "Failed to run source analysis.";
+          setStreamError(msg);
+          loadProject();
+        }
+      }
     } catch (err: unknown) {
       if (terminalReachedRef.current) {
         return;
@@ -260,6 +334,76 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
       }
     } finally {
       setIsSubmittingSource(false);
+    }
+  }
+
+  // Trigger or retry Analyst stage for a specific collected source
+  async function handleTriggerAnalyze(sourceId: string, title?: string) {
+    if (analyzingSourceId || isSubmittingSource) return;
+
+    setAnalyzingSourceId(sourceId);
+    failedSourceIdRef.current = sourceId;
+    setStreamSourceTitle(title || "Source Analysis");
+    setStreamStageName("Analyst");
+    setIsStreamTrayOpen(true);
+    setStreamEvents([]);
+    setConnectionStatus("live");
+    setStreamError(null);
+    terminalReachedRef.current = false;
+    lastSeqRef.current = 0;
+
+    const idempotencyKey = generateIdempotencyKey();
+
+    try {
+      await analyzeSourceStream({
+        projectId,
+        sourceId,
+        idempotencyKey,
+        onJobId: (jobId) => {
+          activeJobIdRef.current = jobId;
+        },
+        onEvent: (event) => {
+          if (event.type === "heartbeat") return;
+          if (terminalReachedRef.current) return;
+
+          setConnectionStatus("live");
+          lastSeqRef.current = Math.max(lastSeqRef.current, event.seq);
+          setStreamEvents((prev) => {
+            if (prev.some((e) => e.seq === event.seq && e.type === event.type)) {
+              return prev;
+            }
+            return [...prev, event];
+          });
+
+          if (event.type === "stage_end") {
+            terminalReachedRef.current = true;
+            const isSuccess = event.data?.status === "succeeded";
+            setConnectionStatus(isSuccess ? "succeeded" : "failed");
+            if (isSuccess) {
+              failedSourceIdRef.current = null;
+            } else {
+              setStreamError("Analyst stage finished with failed status.");
+            }
+            loadProject();
+          } else if (event.type === "error") {
+            setStreamError(event.message || "Analyst stage reported an error.");
+          }
+        },
+      });
+    } catch (err: unknown) {
+      if (terminalReachedRef.current) return;
+      terminalReachedRef.current = true;
+      setConnectionStatus("failed");
+      const msg =
+        err instanceof ApiClientError
+          ? `${err.code}: ${err.message}`
+          : err instanceof Error
+            ? err.message
+            : "Failed to run source analysis.";
+      setStreamError(msg);
+      loadProject();
+    } finally {
+      setAnalyzingSourceId(null);
     }
   }
 
@@ -407,11 +551,10 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
                   role="tab"
                   aria-selected={activeTab === "sources"}
                   onClick={() => setActiveTab("sources")}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
-                    activeTab === "sources"
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${activeTab === "sources"
                       ? "bg-[var(--color-card)] text-[var(--color-primary)] font-semibold border border-[var(--color-border)] shadow-xs"
                       : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-                  }`}
+                    }`}
                 >
                   Sources ({detail.sources.length})
                 </button>
@@ -420,11 +563,10 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
                   role="tab"
                   aria-selected={activeTab === "insights"}
                   onClick={() => setActiveTab("insights")}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
-                    activeTab === "insights"
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${activeTab === "insights"
                       ? "bg-[var(--color-card)] text-[var(--color-primary)] font-semibold border border-[var(--color-border)] shadow-xs"
                       : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-                  }`}
+                    }`}
                 >
                   Insights & Conflicts
                 </button>
@@ -433,11 +575,10 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
                   role="tab"
                   aria-selected={activeTab === "ask"}
                   onClick={() => setActiveTab("ask")}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
-                    activeTab === "ask"
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${activeTab === "ask"
                       ? "bg-[var(--color-card)] text-[var(--color-primary)] font-semibold border border-[var(--color-border)] shadow-xs"
                       : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-                  }`}
+                    }`}
                 >
                   Ask & Briefing
                 </button>
@@ -454,27 +595,21 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
                   setDeleteSourceError(null);
                   setDeleteSourceTarget({ id: sourceId, title });
                 }}
+                onTriggerAnalyze={handleTriggerAnalyze}
+                analyzingSourceId={analyzingSourceId}
               />
             )}
 
-            {/* TAB 2: Insights Preview */}
+            {/* TAB 2: Insights */}
             {activeTab === "insights" && (
-              <div className="p-10 border border-dashed border-[var(--color-border)] rounded-2xl bg-[var(--color-surface)]/60 text-center space-y-3 max-w-xl mx-auto my-6 animate-in fade-in duration-150">
-                <div className="w-12 h-12 mx-auto rounded-full bg-[var(--color-card)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-agent-critic)] shadow-xs">
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
-                  </svg>
-                </div>
-                <div className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-[var(--color-card)] border border-[var(--color-border)] text-[var(--color-text-muted)] uppercase tracking-wider">
-                  Upcoming: Stage 4 (Analyst) & Stage 5 (Critic)
-                </div>
-                <h2 className="text-sm font-bold text-[var(--color-text-primary)]">
-                  Evidence Synthesis & Cross-Source Conflicts
-                </h2>
-                <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed max-w-md mx-auto">
-                  When Analyst and Critic agents process this workspace, extracted claims and verified stances (supports, contradicts, nuances) will be surfaced here with citation references.
-                </p>
-              </div>
+              <InsightsView
+                projectId={projectId}
+                sources={detail.sources}
+                onInspectSource={(sourceId) => setInspectedSourceId(sourceId)}
+                onTriggerAnalyze={handleTriggerAnalyze}
+                onOpenAddModal={() => setIsAddModalOpen(true)}
+                analyzingSourceId={analyzingSourceId}
+              />
             )}
 
             {/* TAB 3: Ask Preview */}
@@ -517,18 +652,23 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
             setDeleteSourceError(null);
             setDeleteSourceTarget({ id: sourceId, title });
           }}
+          onTriggerAnalyze={handleTriggerAnalyze}
+          isAnalyzing={analyzingSourceId === inspectedSourceId}
         />
 
         {/* Live Stream Tray */}
         <StreamTray
           isOpen={isStreamTrayOpen}
+          stageName={streamStageName}
           sourceTitle={streamSourceTitle}
           events={streamEvents}
           connectionStatus={connectionStatus}
           errorMessage={streamError}
           onClose={() => setIsStreamTrayOpen(false)}
           onRetry={() => {
-            if (activeInputRef.current) {
+            if (streamStageName === "Analyst" && failedSourceIdRef.current) {
+              handleTriggerAnalyze(failedSourceIdRef.current, streamSourceTitle);
+            } else if (activeInputRef.current) {
               handleAddSource(activeInputRef.current);
             }
           }}

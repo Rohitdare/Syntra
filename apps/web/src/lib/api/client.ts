@@ -64,34 +64,37 @@ function resolveUrl(path: string, customBaseUrl?: string): string {
   return `${base}${normalizedPath}`;
 }
 
-async function handleResponse<T>(res: Response, parser: (data: unknown) => T): Promise<T> {
+async function extractApiError(res: Response, fallbackMessage: string): Promise<ApiClientError> {
   const contentType = res.headers?.get?.("Content-Type") || "";
-
-  if (!res.ok) {
-    if (contentType.includes("application/json")) {
-      try {
-        const errorJson = await res.json();
-        const parsedEnvelope = ErrorEnvelopeSchema.safeParse(errorJson);
-        if (parsedEnvelope.success) {
-          const { error } = parsedEnvelope.data;
-          throw new ApiClientError({
-            code: error.code,
-            message: error.message,
-            requestId: error.requestId,
-            retryable: error.retryable,
-            retryAfterSeconds: error.retryAfterSeconds,
-            status: res.status,
-          });
-        }
-      } catch (e) {
-        if (e instanceof ApiClientError) throw e;
+  if (contentType.includes("application/json")) {
+    try {
+      const errorJson = await res.json();
+      const parsedEnvelope = ErrorEnvelopeSchema.safeParse(errorJson);
+      if (parsedEnvelope.success) {
+        const { error } = parsedEnvelope.data;
+        return new ApiClientError({
+          code: error.code,
+          message: error.message,
+          requestId: error.requestId,
+          retryable: error.retryable,
+          retryAfterSeconds: error.retryAfterSeconds,
+          status: res.status,
+        });
       }
+    } catch (e) {
+      if (e instanceof ApiClientError) return e;
     }
-    throw new ApiClientError({
-      code: `HTTP_${res.status}`,
-      message: `Server returned HTTP ${res.status}`,
-      status: res.status,
-    });
+  }
+  return new ApiClientError({
+    code: `HTTP_${res.status}`,
+    message: fallbackMessage,
+    status: res.status,
+  });
+}
+
+async function handleResponse<T>(res: Response, parser: (data: unknown) => T): Promise<T> {
+  if (!res.ok) {
+    throw await extractApiError(res, `Server returned HTTP ${res.status}`);
   }
 
   const json = await res.json();
@@ -377,31 +380,7 @@ export async function ingestSourceStream({
   }
 
   if (!res.ok) {
-    const contentType = res.headers?.get?.("Content-Type") || "";
-    if (contentType.includes("application/json")) {
-      try {
-        const errorJson = await res.json();
-        const parsedEnvelope = ErrorEnvelopeSchema.safeParse(errorJson);
-        if (parsedEnvelope.success) {
-          const { error } = parsedEnvelope.data;
-          throw new ApiClientError({
-            code: error.code,
-            message: error.message,
-            requestId: error.requestId,
-            retryable: error.retryable,
-            retryAfterSeconds: error.retryAfterSeconds,
-            status: res.status,
-          });
-        }
-      } catch (e) {
-        if (e instanceof ApiClientError) throw e;
-      }
-    }
-    throw new ApiClientError({
-      code: `HTTP_${res.status}`,
-      message: `Ingestion failed with HTTP ${res.status}`,
-      status: res.status,
-    });
+    throw await extractApiError(res, `Ingestion failed with HTTP ${res.status}`);
   }
 
   if (!res.body) {
@@ -413,6 +392,59 @@ export async function ingestSourceStream({
   }
 
   await parseNdjsonStream(res.body, onEvent, signal);
+}
+
+export interface AnalyzeSourceStreamOptions {
+  projectId: string;
+  sourceId: string;
+  idempotencyKey?: string;
+  onJobId?: (jobId: string) => void;
+  onEvent?: (event: StreamEvent) => void;
+  baseUrl?: string;
+  signal?: AbortSignal;
+}
+
+export async function analyzeSourceStream({
+  projectId,
+  sourceId,
+  idempotencyKey,
+  onJobId,
+  onEvent,
+  baseUrl,
+  signal,
+}: AnalyzeSourceStreamOptions): Promise<void> {
+  const url = resolveUrl(`/api/projects/${projectId}/sources/${sourceId}/analyze`, baseUrl);
+  const headers: Record<string, string> = {
+    Accept: "application/x-ndjson",
+  };
+  if (idempotencyKey) {
+    headers["Idempotency-Key"] = idempotencyKey;
+  }
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    signal,
+  });
+
+  const jobIdHeader = res.headers.get("X-Job-Id");
+  if (jobIdHeader && onJobId) {
+    onJobId(jobIdHeader);
+  }
+
+  if (!res.ok) {
+    throw await extractApiError(res, `Analysis failed with HTTP ${res.status}`);
+  }
+
+  if (!res.body) {
+    throw new ApiClientError({
+      code: "STREAM_EMPTY",
+      message: "Server did not return a readable response stream",
+      status: res.status,
+    });
+  }
+
+  await parseNdjsonStream(res.body, onEvent || (() => {}), signal);
 }
 
 export async function streamJobEvents({
@@ -437,31 +469,7 @@ export async function streamJobEvents({
   });
 
   if (!res.ok) {
-    const contentType = res.headers?.get?.("Content-Type") || "";
-    if (contentType.includes("application/json")) {
-      try {
-        const errorJson = await res.json();
-        const parsedEnvelope = ErrorEnvelopeSchema.safeParse(errorJson);
-        if (parsedEnvelope.success) {
-          const { error } = parsedEnvelope.data;
-          throw new ApiClientError({
-            code: error.code,
-            message: error.message,
-            requestId: error.requestId,
-            retryable: error.retryable,
-            retryAfterSeconds: error.retryAfterSeconds,
-            status: res.status,
-          });
-        }
-      } catch (e) {
-        if (e instanceof ApiClientError) throw e;
-      }
-    }
-    throw new ApiClientError({
-      code: `HTTP_${res.status}`,
-      message: `Failed to stream job events: HTTP ${res.status}`,
-      status: res.status,
-    });
+    throw await extractApiError(res, `Failed to stream job events: HTTP ${res.status}`);
   }
 
   if (!res.body) {

@@ -15,6 +15,10 @@
     "lastError": null
   },
   "summary": "This empirical study evaluates the consistency and hallucination rates of autonomous research agents operating on multi-source evidence corpora. The authors demonstrate that two-store validation reduces ungrounded claims significantly across benchmark datasets.",
+  "topics": [
+    "Multi-Agent Systems",
+    "Verification"
+  ],
   "claims": [
     {
       "id": "clm_4f1b2c3d_00",

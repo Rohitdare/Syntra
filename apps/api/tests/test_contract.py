@@ -69,3 +69,5 @@ def test_source_detail_analyzed_contract_fixture() -> None:
     assert validated.claims[0].page_hint == 4
     assert validated.claims[1].page_hint == 7
     assert validated.summary is not None
+    assert len(validated.topics) == 2
+    assert "Multi-Agent Systems" in validated.topics

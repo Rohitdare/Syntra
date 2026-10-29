@@ -170,6 +170,7 @@ class SourceDetailResponse(CamelModel):
 
     source: ProjectSourceItem
     summary: str | None = None
+    topics: list[str] = Field(default_factory=list)
     claims: list[ClaimItem] = Field(default_factory=list)
     verdicts: list[dict[str, Any]] = Field(default_factory=list)
 

@@ -9,6 +9,35 @@ export interface SourceDrawerProps {
   sourceId: string | null;
   onClose: () => void;
   onRequestDelete: (sourceId: string, sourceTitle: string) => void;
+  onTriggerAnalyze?: (sourceId: string, sourceTitle?: string) => void;
+  isAnalyzing?: boolean;
+}
+
+export function ImportanceBadge({ importance }: { importance: number }) {
+  let label = "Context (1/5)";
+  let style = "bg-[var(--color-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)]";
+
+  if (importance >= 5) {
+    label = "Central (5/5)";
+    style = "bg-[var(--color-primary-soft)] text-[var(--color-primary)] border-[var(--color-primary)]/30 font-semibold";
+  } else if (importance === 4) {
+    label = "Key Finding (4/5)";
+    style = "bg-[var(--color-agent-analyst-soft,#EEF2FF)] text-[var(--color-agent-analyst)] border-[var(--color-agent-analyst)]/30";
+  } else if (importance === 3) {
+    label = "Supporting (3/5)";
+    style = "bg-[var(--color-surface)] text-[var(--color-text-primary)] border-[var(--color-border)]";
+  } else if (importance === 2) {
+    label = "Minor (2/5)";
+  }
+
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono border ${style}`}
+      title={`Significance: ${importance} of 5`}
+    >
+      {label}
+    </span>
+  );
 }
 
 export function SourceDrawer({
@@ -17,6 +46,8 @@ export function SourceDrawer({
   sourceId,
   onClose,
   onRequestDelete,
+  onTriggerAnalyze,
+  isAnalyzing,
 }: SourceDrawerProps) {
   const [data, setData] = useState<SourceDetailResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -175,38 +206,55 @@ export function SourceDrawer({
                   Stage Processing Status
                 </span>
                 <div className="flex flex-wrap gap-2 text-xs">
-                  <span
-                    className={`px-2.5 py-1 rounded-md font-medium flex items-center space-x-1 ${
-                      source.stages.collected
-                        ? "bg-[var(--color-success-soft)] text-[var(--color-success)]"
-                        : "bg-[var(--color-card)] text-[var(--color-text-muted)] border border-[var(--color-border)]"
-                    }`}
-                  >
-                    <span>{source.stages.collected ? "✓" : "○"}</span>
-                    <span>Collected</span>
-                  </span>
-                  <span
-                    className={`px-2.5 py-1 rounded-md font-medium flex items-center space-x-1 ${
-                      source.stages.analyzed
-                        ? "bg-[var(--color-primary-soft)] text-[var(--color-primary)]"
-                        : "bg-[var(--color-card)] text-[var(--color-text-muted)] border border-[var(--color-border)]"
-                    }`}
-                  >
-                    <span>{source.stages.analyzed ? "✓" : "○"}</span>
-                    <span>Analyzed</span>
-                  </span>
-                  <span
-                    className={`px-2.5 py-1 rounded-md font-medium flex items-center space-x-1 ${
-                      source.stages.critiqued
-                        ? "bg-[var(--color-warning-soft)] text-[var(--color-warning)]"
-                        : "bg-[var(--color-card)] text-[var(--color-text-muted)] border border-[var(--color-border)]"
-                    }`}
-                  >
-                    <span>{source.stages.critiqued ? "✓" : "○"}</span>
-                    <span>Critiqued</span>
-                  </span>
+                  {[
+                    { name: "Collected", done: source.stages.collected, activeCls: "bg-[var(--color-success-soft)] text-[var(--color-success)]" },
+                    { name: "Analyzed", done: source.stages.analyzed, activeCls: "bg-[var(--color-primary-soft)] text-[var(--color-primary)]" },
+                    { name: "Critiqued", done: source.stages.critiqued, activeCls: "bg-[var(--color-warning-soft)] text-[var(--color-warning)]" },
+                  ].map(({ name, done, activeCls }) => (
+                    <span
+                      key={name}
+                      className={`px-2.5 py-1 rounded-md font-medium flex items-center space-x-1 ${
+                        done ? activeCls : "bg-[var(--color-card)] text-[var(--color-text-muted)] border border-[var(--color-border)]"
+                      }`}
+                    >
+                      <span>{done ? "✓" : "○"}</span>
+                      <span>{name}</span>
+                    </span>
+                  ))}
                 </div>
               </div>
+
+              {/* Unanalyzed or Analysis Failed Action Banner */}
+              {source.stages.collected && !source.stages.analyzed && onTriggerAnalyze && (
+                <div className="p-3.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-[var(--color-text-primary)]">
+                      {source.lastError ? "Analysis Interrupted" : "Analysis Pending"}
+                    </span>
+                    {source.lastError && (
+                      <span className="font-mono text-[10px] text-[var(--color-error)] bg-[var(--color-error-soft)] px-2 py-0.5 rounded border border-[var(--color-error)]/20">
+                        {source.lastError}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
+                    {source.lastError
+                      ? "The Analyst agent encountered an issue. Your collected source text and chunk memory remain intact."
+                      : "Run the Analyst agent to generate an executive summary and extract atomic claims from this source."}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={isAnalyzing}
+                    onClick={() => onTriggerAnalyze(source.id, source.title)}
+                    className="px-3 py-1.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] disabled:opacity-50 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors cursor-pointer flex items-center space-x-1.5"
+                  >
+                    {isAnalyzing && (
+                      <span className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                    )}
+                    <span>{source.lastError ? "Retry Analysis" : "Run Analysis"}</span>
+                  </button>
+                </div>
+              )}
 
               {/* Summary Section */}
               <div className="space-y-2">
@@ -214,8 +262,22 @@ export function SourceDrawer({
                   Analyst Summary
                 </span>
                 {currentData?.summary ? (
-                  <div className="p-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] text-xs text-[var(--color-text-primary)] leading-relaxed">
-                    {currentData.summary}
+                  <div className="space-y-2">
+                    <div className="p-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] text-xs text-[var(--color-text-primary)] leading-relaxed">
+                      {currentData.summary}
+                    </div>
+                    {currentData.topics && currentData.topics.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {currentData.topics.map((t) => (
+                          <span
+                            key={t}
+                            className="inline-block px-2 py-0.5 rounded-full text-[10px] font-mono font-medium bg-[var(--color-card)] border border-[var(--color-border)] text-[var(--color-text-secondary)]"
+                          >
+                            {`#${t}`}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="p-4 rounded-lg border border-dashed border-[var(--color-border)] bg-[var(--color-card)]/40 text-xs text-[var(--color-text-muted)] italic">
@@ -234,18 +296,40 @@ export function SourceDrawer({
                   <div className="space-y-2">
                     {currentData.claims.map((claim, idx) => (
                       <div
-                        key={idx}
-                        className="p-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] text-xs space-y-1"
+                        key={claim.id || idx}
+                        className="p-3.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] text-xs space-y-1.5"
                       >
-                        <p className="text-[var(--color-text-primary)] font-medium">
-                          {String(claim.text || JSON.stringify(claim))}
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center space-x-2">
+                            <span className="font-mono text-[10px] font-bold text-[var(--color-text-muted)]">
+                              #{claim.claimIndex !== undefined ? claim.claimIndex + 1 : idx + 1}
+                            </span>
+                            <ImportanceBadge importance={claim.importance} />
+                          </div>
+                          {claim.pageHint !== null && claim.pageHint !== undefined && (
+                            <span
+                              className="font-mono text-[10px] text-[var(--color-text-muted)] bg-[var(--color-surface)] px-1.5 py-0.5 rounded border border-[var(--color-border)]"
+                              title={`Verified page reference: ${claim.pageHint}`}
+                            >
+                              p. {claim.pageHint}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[var(--color-text-primary)] font-medium leading-relaxed">
+                          {claim.text}
                         </p>
                       </div>
                     ))}
+                    <div className="pt-1 text-[10px] font-mono text-[var(--color-text-muted)] flex items-center space-x-1">
+                      <span>✦</span>
+                      <span>AI-extracted claims · Grounded in source text</span>
+                    </div>
                   </div>
                 ) : (
                   <div className="p-4 rounded-lg border border-dashed border-[var(--color-border)] bg-[var(--color-card)]/40 text-xs text-[var(--color-text-muted)] italic">
-                    No claims extracted yet. Claims are populated when the Analyst agent processes the text.
+                    {source.stages.analyzed
+                      ? "No claims extracted for this source."
+                      : "No claims extracted yet. Claims are populated when the Analyst agent processes the text."}
                   </div>
                 )}
               </div>

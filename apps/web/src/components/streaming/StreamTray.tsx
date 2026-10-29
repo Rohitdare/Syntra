@@ -36,8 +36,18 @@ export function StreamTray({
   // Extract result event data if available
   const resultEvent = visibleEvents.find((e) => e.type === "result");
   const resultData = resultEvent?.data as
-    | { chunkCount?: number; charCount?: number; tag?: string; sourceId?: string }
+    | {
+        chunkCount?: number;
+        charCount?: number;
+        tag?: string;
+        sourceId?: string;
+        claimCount?: number;
+        topics?: string[];
+      }
     | undefined;
+
+  const isAnalystStage =
+    stageName.toLowerCase() === "analyst" || visibleEvents.some((e) => e.agent === "analyst");
 
   // Auto-scroll event log to bottom when new events arrive
   useEffect(() => {
@@ -48,60 +58,33 @@ export function StreamTray({
 
   if (!isOpen) return null;
 
+  const AGENT_COLORS: Record<string, string> = {
+    collector: "text-[var(--color-agent-collector)]",
+    analyst: "text-[var(--color-agent-analyst)]",
+    critic: "text-[var(--color-agent-critic)]",
+    writer: "text-[var(--color-agent-writer)]",
+  };
+
   function getAgentColorClass(agent: string): string {
-    switch (agent.toLowerCase()) {
-      case "collector":
-        return "text-[var(--color-agent-collector)]";
-      case "analyst":
-        return "text-[var(--color-agent-analyst)]";
-      case "critic":
-        return "text-[var(--color-agent-critic)]";
-      case "writer":
-        return "text-[var(--color-agent-writer)]";
-      default:
-        return "text-[var(--color-text-secondary)]";
-    }
+    return AGENT_COLORS[agent.toLowerCase()] ?? "text-[var(--color-text-secondary)]";
   }
 
   function getStatusBadge() {
-    switch (connectionStatus) {
-      case "live":
-        return (
-          <span className="flex items-center space-x-1.5 text-[11px] font-mono font-medium text-[var(--color-success)] bg-[var(--color-success-soft)] px-2 py-0.5 rounded-full border border-[var(--color-success)]/20">
-            <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-success)] animate-pulse inline-block" />
-            <span>LIVE</span>
-          </span>
-        );
-      case "reconnecting":
-        return (
-          <span className="flex items-center space-x-1.5 text-[11px] font-mono font-medium text-[var(--color-warning)] bg-[var(--color-warning-soft)] px-2 py-0.5 rounded-full border border-[var(--color-warning)]/20">
-            <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-warning)] animate-ping inline-block" />
-            <span>RECONNECTING</span>
-          </span>
-        );
-      case "succeeded":
-        return (
-          <span className="flex items-center space-x-1 text-[11px] font-mono font-medium text-[var(--color-success)] bg-[var(--color-success-soft)] px-2 py-0.5 rounded-full border border-[var(--color-success)]/20">
-            <span>✓</span>
-            <span>COMPLETE</span>
-          </span>
-        );
-      case "failed":
-        return (
-          <span className="flex items-center space-x-1 text-[11px] font-mono font-medium text-[var(--color-error)] bg-[var(--color-error-soft)] px-2 py-0.5 rounded-full border border-[var(--color-error)]/20">
-            <span>✕</span>
-            <span>FAILED</span>
-          </span>
-        );
-      case "connecting":
-      default:
-        return (
-          <span className="flex items-center space-x-1.5 text-[11px] font-mono font-medium text-[var(--color-text-muted)] bg-[var(--color-surface)] px-2 py-0.5 rounded-full border border-[var(--color-border)]">
-            <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-text-muted)] animate-pulse inline-block" />
-            <span>CONNECTING</span>
-          </span>
-        );
-    }
+    const configs: Record<StreamConnectionStatus, { text: string; icon: string; cls: string; dot?: boolean }> = {
+      live: { text: "LIVE", icon: "", cls: "text-[var(--color-success)] bg-[var(--color-success-soft)] border-[var(--color-success)]/20", dot: true },
+      reconnecting: { text: "RECONNECTING", icon: "", cls: "text-[var(--color-warning)] bg-[var(--color-warning-soft)] border-[var(--color-warning)]/20", dot: true },
+      succeeded: { text: "COMPLETE", icon: "✓", cls: "text-[var(--color-success)] bg-[var(--color-success-soft)] border-[var(--color-success)]/20" },
+      failed: { text: "FAILED", icon: "✕", cls: "text-[var(--color-error)] bg-[var(--color-error-soft)] border-[var(--color-error)]/20" },
+      connecting: { text: "CONNECTING", icon: "", cls: "text-[var(--color-text-muted)] bg-[var(--color-surface)] border-[var(--color-border)]", dot: true },
+    };
+    const c = configs[connectionStatus] || configs.connecting;
+    return (
+      <span className={`flex items-center space-x-1.5 text-[11px] font-mono font-medium px-2 py-0.5 rounded-full border ${c.cls}`}>
+        {c.dot && <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse inline-block" />}
+        {c.icon && <span>{c.icon}</span>}
+        <span>{c.text}</span>
+      </span>
+    );
   }
 
   return (
@@ -187,10 +170,14 @@ export function StreamTray({
                 <span className="w-5 h-5 rounded-full bg-[var(--color-success)] text-white flex items-center justify-center text-xs">
                   ✓
                 </span>
-                <span>Ingestion Completed Successfully</span>
+                <span>
+                  {isAnalystStage ? "Analysis Completed Successfully" : "Ingestion Completed Successfully"}
+                </span>
               </div>
               <p className="text-[var(--color-text-primary)] leading-relaxed">
-                Source document parsed, text cleaned, and vector chunk embeddings committed to shared evidence memory.
+                {isAnalystStage
+                  ? "Source document analyzed, executive summary generated, and atomic claims indexed into shared evidence memory."
+                  : "Source document parsed, text cleaned, and vector chunk embeddings committed to shared evidence memory."}
               </p>
               {resultData && (
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 font-mono text-[11px] text-[var(--color-text-secondary)]">
@@ -204,6 +191,16 @@ export function StreamTray({
                   )}
                   {resultData.charCount !== undefined && (
                     <span>{resultData.charCount.toLocaleString()} characters</span>
+                  )}
+                  {resultData.claimCount !== undefined && (
+                    <span className="font-bold text-[var(--color-agent-analyst)]">
+                      {resultData.claimCount} claims extracted
+                    </span>
+                  )}
+                  {resultData.topics && resultData.topics.length > 0 && (
+                    <span className="text-[var(--color-text-muted)]">
+                      Topics: {resultData.topics.join(", ")}
+                    </span>
                   )}
                 </div>
               )}
@@ -226,22 +223,26 @@ export function StreamTray({
                 <span className="w-5 h-5 rounded-full bg-[var(--color-error)] text-white flex items-center justify-center text-xs">
                   ✕
                 </span>
-                <span>Ingestion Pipeline Failed</span>
+                <span>
+                  {isAnalystStage ? "Analysis Pipeline Failed" : "Ingestion Pipeline Failed"}
+                </span>
               </div>
               <p className="text-[var(--color-error)] leading-relaxed font-medium">
-                {errorMessage || latestEvent?.message || "An error interrupted the collector pipeline."}
+                {errorMessage || latestEvent?.message || "An error interrupted the pipeline."}
               </p>
               {onRetry && (
                 <div className="pt-1 flex items-center justify-between">
                   <span className="text-[11px] text-[var(--color-text-secondary)]">
-                    Safe to retry without duplicate chunks.
+                    {isAnalystStage
+                      ? "Safe to retry without duplicating claims."
+                      : "Safe to retry without duplicate chunks."}
                   </span>
                   <button
                     type="button"
                     onClick={onRetry}
                     className="px-3 py-1 bg-[var(--color-card)] hover:bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md font-bold text-xs text-[var(--color-primary)] transition-colors cursor-pointer"
                   >
-                    Retry Ingestion
+                    {isAnalystStage ? "Retry Analysis" : "Retry Ingestion"}
                   </button>
                 </div>
               )}

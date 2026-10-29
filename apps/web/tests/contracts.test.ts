@@ -53,6 +53,8 @@ describe("Contracts validation", () => {
     expect(parsed.claims[0].id).toBe("clm_4f1b2c3d_00");
     expect(parsed.claims[0].importance).toBe(5);
     expect(parsed.claims[0].pageHint).toBe(4);
+    expect(parsed.topics).toContain("Multi-Agent Systems");
+    expect(parsed.topics).toContain("Verification");
     expect(parsed.claims[1].pageHint).toBe(7);
     expect(parsed.summary).toBeTruthy();
   });

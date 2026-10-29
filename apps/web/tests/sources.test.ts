@@ -5,6 +5,7 @@ import {
   getSource,
   parseNdjsonStream,
   ingestSourceStream,
+  analyzeSourceStream,
   streamJobEvents,
 } from "../src/lib/api/client";
 import { StreamEvent } from "../src/lib/api/schemas";
@@ -451,6 +452,228 @@ describe("Stage 3C: Source Management and Streaming Client", () => {
       expect(events).toHaveLength(2);
       expect(events[0].type).toBe("heartbeat");
       expect(events[1].type).toBe("stage_start");
+    });
+  });
+
+  describe("Stage 4E: Source Analysis Streaming Client", () => {
+    it("submits POST to analyze endpoint with correct headers and streams analyst events", async () => {
+      const stageStartEvent: StreamEvent = {
+        jobId: "job_an_01",
+        seq: 1,
+        ts: "2026-10-28T12:05:00Z",
+        stage: "analyze",
+        agent: "analyst",
+        type: "stage_start",
+        message: "Starting claim extraction",
+      };
+      const claimEvent: StreamEvent = {
+        jobId: "job_an_01",
+        seq: 2,
+        ts: "2026-10-28T12:05:01Z",
+        stage: "analyze",
+        agent: "analyst",
+        type: "claim",
+        data: {
+          id: "clm_src01_00",
+          claimText: "Autonomous models require verification boundaries",
+          importance: 5,
+          pageHint: 3,
+        },
+      };
+      const resultEvent: StreamEvent = {
+        jobId: "job_an_01",
+        seq: 3,
+        ts: "2026-10-28T12:05:02Z",
+        stage: "analyze",
+        agent: "analyst",
+        type: "result",
+        data: {
+          claimCount: 1,
+          topics: ["Safety", "Verification"],
+        },
+      };
+      const stageEndEvent: StreamEvent = {
+        jobId: "job_an_01",
+        seq: 4,
+        ts: "2026-10-28T12:05:03Z",
+        stage: "analyze",
+        agent: "analyst",
+        type: "stage_end",
+        data: { status: "succeeded" },
+      };
+
+      const encoder = new TextEncoder();
+      const payload = encoder.encode(
+        [stageStartEvent, claimEvent, resultEvent, stageEndEvent]
+          .map((e) => JSON.stringify(e))
+          .join("\n") + "\n"
+      );
+
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(payload);
+          controller.close();
+        },
+      });
+
+      let capturedJobId: string | null = null;
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          "Content-Type": "application/x-ndjson",
+          "X-Job-Id": "job_an_01",
+        }),
+        body: stream,
+      } as unknown as Response);
+
+      const allEvents: StreamEvent[] = [];
+
+      await analyzeSourceStream({
+        projectId: "prj_01",
+        sourceId: "src_01",
+        idempotencyKey: "test_idemp_key_99",
+        baseUrl: "http://localhost:8000",
+        onEvent: (e) => allEvents.push(e),
+        onJobId: (id) => {
+          capturedJobId = id;
+        },
+      });
+
+      expect(capturedJobId).toBe("job_an_01");
+      expect(allEvents).toHaveLength(4);
+      const foundClaim = allEvents.find((e) => e.type === "claim");
+      expect(foundClaim).toBeDefined();
+      const foundResult = allEvents.find((e) => e.type === "result");
+      expect(foundResult?.data).toEqual({
+        claimCount: 1,
+        topics: ["Safety", "Verification"],
+      });
+      const foundStageEnd = allEvents.find((e) => e.type === "stage_end");
+      expect(foundStageEnd?.data).toEqual({ status: "succeeded" });
+
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8000/api/projects/prj_01/sources/src_01/analyze",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            Accept: "application/x-ndjson",
+            "Idempotency-Key": "test_idemp_key_99",
+          }),
+        })
+      );
+    });
+
+    it("handles HTTP 404 SOURCE_NOT_FOUND when analyzing a non-existent source", async () => {
+      const errorPayload = {
+        error: {
+          code: "SOURCE_NOT_FOUND",
+          message: "Source src_missing was not found in project prj_01",
+          requestId: "req_an_404",
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      };
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        headers: new Headers({ "Content-Type": "application/json" }),
+        json: async () => errorPayload,
+      } as unknown as Response);
+
+      await expect(
+        analyzeSourceStream({
+          projectId: "prj_01",
+          sourceId: "src_missing",
+          baseUrl: "http://localhost:8000",
+          onEvent: () => {},
+        })
+      ).rejects.toThrow("Source src_missing was not found");
+    });
+
+    it("handles HTTP 409 JOB_ACTIVE when analysis is already in progress", async () => {
+      const errorPayload = {
+        error: {
+          code: "JOB_ACTIVE",
+          message: "A job is already active for this source",
+          requestId: "req_an_409",
+          retryable: true,
+          retryAfterSeconds: 5,
+        },
+      };
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        headers: new Headers({ "Content-Type": "application/json" }),
+        json: async () => errorPayload,
+      } as unknown as Response);
+
+      await expect(
+        analyzeSourceStream({
+          projectId: "prj_01",
+          sourceId: "src_01",
+          baseUrl: "http://localhost:8000",
+          onEvent: () => {},
+        })
+      ).rejects.toThrow("A job is already active for this source");
+    });
+
+    it("emits error event through onEvent stream when upstream fails", async () => {
+      const errEvent: StreamEvent = {
+        jobId: "job_an_err",
+        seq: 1,
+        ts: "2026-10-28T12:05:05Z",
+        stage: "system",
+        agent: "runner",
+        type: "error",
+        message: "Gemini rate limit exceeded",
+        data: {
+          code: "UPSTREAM_FAILED",
+          retryable: true,
+          retryAfterSeconds: 10,
+        },
+      };
+
+      const encoder = new TextEncoder();
+      const payload = encoder.encode(JSON.stringify(errEvent) + "\n");
+
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(payload);
+          controller.close();
+        },
+      });
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          "Content-Type": "application/x-ndjson",
+          "X-Job-Id": "job_an_err",
+        }),
+        body: stream,
+      } as unknown as Response);
+
+      const receivedEvents: StreamEvent[] = [];
+      await analyzeSourceStream({
+        projectId: "prj_01",
+        sourceId: "src_01",
+        baseUrl: "http://localhost:8000",
+        onEvent: (e) => {
+          receivedEvents.push(e);
+        },
+      });
+
+      expect(receivedEvents).toHaveLength(1);
+      expect(receivedEvents[0].type).toBe("error");
+      expect(receivedEvents[0].message).toBe("Gemini rate limit exceeded");
+      expect(receivedEvents[0].data).toEqual({
+        code: "UPSTREAM_FAILED",
+        retryable: true,
+        retryAfterSeconds: 10,
+      });
     });
   });
 });

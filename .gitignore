@@ -45,6 +45,15 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# Test suites & test caches (untracked per user request)
+test/
+tests/
+apps/api/tests/
+apps/web/tests/
+.vitest/
+.vitest-cache/
+coverage/
+
 # Environment & Secrets (only *.example files are tracked)
 .env*
 !.env.example
@@ -66,8 +75,11 @@ Thumbs.db
 # Local scratch scripts
 apps/api/check_*.py
 
-# Agent context recovery & handover
+# Agent context recovery & temporary reports
 docs/PROJECT-CONTEXT-RECOVERY.md
+docs/*-REPORT.md
+docs/CODEBASE_UNDERSTANDING.md
+docs/NEXT_STEPS.md
 
 # Next.js / TypeScript build artifacts
 *.tsbuildinfo

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import time
 import uuid
@@ -28,6 +29,8 @@ from research_desk.providers.llm import (
     ProviderError,
     Tier,
 )
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -99,14 +102,14 @@ class GeminiProvider(LLMProvider, EmbeddingProvider):
             await self._pace(self.settings.LLM_MIN_INTERVAL_MS, is_llm=True)
 
             async with self._concurrency_sem:
-                try:
-                    config = types.GenerateContentConfig(
-                        system_instruction=system,
-                        temperature=temperature,
-                        response_mime_type="application/json",
-                        response_schema=schema,
-                    )
+                config = types.GenerateContentConfig(
+                    system_instruction=system,
+                    temperature=temperature,
+                    response_mime_type="application/json",
+                    response_schema=schema,
+                )
 
+                try:
                     response = await asyncio.wait_for(
                         self.client.aio.models.generate_content(
                             model=model_name,
@@ -115,39 +118,6 @@ class GeminiProvider(LLMProvider, EmbeddingProvider):
                         ),
                         timeout=self.settings.LLM_TIMEOUT_S,
                     )
-
-                    text_content = response.text or ""
-                    tokens_in = (
-                        response.usage_metadata.prompt_token_count if response.usage_metadata else 0
-                    )
-                    tokens_out = (
-                        response.usage_metadata.candidates_token_count
-                        if response.usage_metadata
-                        else 0
-                    )
-
-                    # Validate with Pydantic
-                    parsed_dict = json.loads(text_content)
-                    validated_data = schema.model_validate(parsed_dict)
-
-                    if self.usage_recorder:
-                        await self.usage_recorder(
-                            ctx.user_id,
-                            ctx.project_id,
-                            ctx.job_id,
-                            "gemini",
-                            model_name,
-                            "llm",
-                            tokens_in or 0,
-                            tokens_out or 0,
-                            0,
-                        )
-
-                    return LLMResult(
-                        data=validated_data,
-                        usage={"tokens_in": tokens_in or 0, "tokens_out": tokens_out or 0},
-                    )
-
                 except asyncio.TimeoutError:
                     if attempt == self.settings.LLM_MAX_RETRIES:
                         raise ProviderError(
@@ -156,22 +126,19 @@ class GeminiProvider(LLMProvider, EmbeddingProvider):
                             retryable=True,
                         )
                     await asyncio.sleep(0.5 + random.uniform(0.1, 0.4))
-
-                except (ValidationError, json.JSONDecodeError) as val_err:
-                    last_error_msg = str(val_err)
-                    if attempt == self.settings.LLM_MAX_RETRIES:
-                        raise ProviderError(
-                            code="LLM_INVALID",
-                            message="Model response failed schema validation after retries",
-                            retryable=True,
-                        )
-                    # Retry appending error hint to user prompt
-                    prompt_user = (
-                        f"{user}\n\nNote: Your previous response was invalid: "
-                        f"{last_error_msg}. Please return valid JSON matching the schema."
+                    continue
+                except ValidationError as sdk_err:
+                    # Google Gen AI SDK failed to translate response_schema
+                    logger.error(
+                        "Google Gen AI SDK failed to translate schema %s: %s",
+                        schema.__name__,
+                        sdk_err,
                     )
-                    await asyncio.sleep(0.5 * (attempt + 1) + random.uniform(0.1, 0.3))
-
+                    raise ProviderError(
+                        code="INTERNAL",
+                        message=f"Model provider cannot serialize schema: {schema.__name__}",
+                        retryable=False,
+                    ) from sdk_err
                 except Exception as exc:
                     err_str = str(exc).lower()
                     if "429" in err_str or "quota" in err_str or "resource_exhausted" in err_str:
@@ -186,6 +153,7 @@ class GeminiProvider(LLMProvider, EmbeddingProvider):
                             )
                         wait_backoff = (2.0**attempt) + random.uniform(0.5, 1.5)
                         await asyncio.sleep(wait_backoff)
+                        continue
                     elif "500" in err_str or "503" in err_str or "unavailable" in err_str:
                         if attempt == self.settings.LLM_MAX_RETRIES:
                             raise ProviderError(
@@ -194,12 +162,71 @@ class GeminiProvider(LLMProvider, EmbeddingProvider):
                                 retryable=True,
                             )
                         await asyncio.sleep(1.0 + random.uniform(0.1, 0.5))
+                        continue
                     else:
+                        logger.error("Gemini API call failed with unhandled error: %s", exc)
                         raise ProviderError(
                             code="INTERNAL",
                             message="Model request failed",
                             retryable=False,
+                        ) from exc
+
+                text_content = response.text or ""
+                tokens_in = (
+                    response.usage_metadata.prompt_token_count if response.usage_metadata else 0
+                )
+                tokens_out = (
+                    response.usage_metadata.candidates_token_count if response.usage_metadata else 0
+                )
+
+                # Validate with Pydantic
+                try:
+                    parsed_dict = json.loads(text_content)
+                    validated_data = schema.model_validate(parsed_dict)
+                except (ValidationError, json.JSONDecodeError) as val_err:
+                    if isinstance(val_err, ValidationError):
+                        safe_errors = str(val_err.errors(include_input=False))
+                    else:
+                        safe_errors = "Malformed JSON returned by model"
+                    last_error_msg = safe_errors
+                    logger.warning(
+                        "Model response validation failed (attempt %d/%d) for schema %s: %s",
+                        attempt + 1,
+                        self.settings.LLM_MAX_RETRIES + 1,
+                        schema.__name__,
+                        safe_errors,
+                    )
+                    if attempt == self.settings.LLM_MAX_RETRIES:
+                        raise ProviderError(
+                            code="LLM_INVALID",
+                            message="Model response failed schema validation after retries",
+                            retryable=True,
                         )
+                    # Retry appending sanitized error hint to user prompt
+                    prompt_user = (
+                        f"{user}\n\nNote: Your previous response was invalid: "
+                        f"{safe_errors}. Please return valid JSON matching the schema."
+                    )
+                    await asyncio.sleep(0.5 * (attempt + 1) + random.uniform(0.1, 0.3))
+                    continue
+
+                if self.usage_recorder:
+                    await self.usage_recorder(
+                        ctx.user_id,
+                        ctx.project_id,
+                        ctx.job_id,
+                        "gemini",
+                        model_name,
+                        "llm",
+                        tokens_in or 0,
+                        tokens_out or 0,
+                        0,
+                    )
+
+                return LLMResult(
+                    data=validated_data,
+                    usage={"tokens_in": tokens_in or 0, "tokens_out": tokens_out or 0},
+                )
 
         raise ProviderError(
             code="LLM_INVALID",

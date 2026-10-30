@@ -2,7 +2,7 @@
 
 A team of AI agents that reads your sources (PDFs, URLs, pasted text), remembers them in a **Qdrant** vector database with a **PostgreSQL** system of record, finds where the sources agree or disagree, and writes a cited briefing that answers your research question.
 
-> Status: planning documents only. Nothing described below is built yet; commands in "Getting started" describe the target state and work only after the named stage is finished. Update "Known limits" and add screenshots, a demo GIF and the live link before releasing.
+> **Implementation status (2026-10-30):** The root `AGENTS.md` marks stages 0–3 complete. Collector and Analyst code, project/source APIs, and the research workspace UI are present. Analyst is implemented and verified. Critic agent core is implemented (Stage 5A/5B), with orchestrator pipeline and UI integration in progress. Writer/Ask remains to be implemented.
 
 ## What it does
 
@@ -61,7 +61,7 @@ Development and the demo target free tiers where they exist; see `docs/02-DESIGN
 
 Prerequisites: Node 20+, Python 3.12, Docker with Compose, and a Gemini API key from Google AI Studio.
 
-Target commands (available after Stage 0 and Stage 1; until then see `docs/06-ANTIGRAVITY-INSTRUCTIONS.md`):
+Local development commands:
 
 ```bash
 # 1. infrastructure
@@ -73,11 +73,11 @@ cd apps/api
 cp .env.example .env                          # then fill in the values
 python -m venv .venv                          # create virtual environment
 # Windows (PowerShell): .\.venv\Scripts\Activate.ps1  |  macOS/Linux: source .venv/bin/activate
-python -m pip install --upgrade pip
+# Install the repository-pinned development requirements; do not upgrade dependencies implicitly.
 python -m pip install -r requirements-dev.txt
-python -m alembic upgrade head                   # PostgreSQL schema (Stage 1)
-python scripts/migrate_qdrant.py                 # Qdrant collection, indexes, alias (Stage 1)
-python scripts/spike_db.py                       # one-time check of databases + embeddings (Stage 1)
+python -m alembic upgrade head                   # PostgreSQL schema
+python scripts/migrate_qdrant.py                 # Qdrant collection, indexes, alias
+python scripts/spike_db.py                       # one-time database/provider check
 python -m uvicorn research_desk.main:app --reload --port 8000
 
 # 3. frontend (new terminal)

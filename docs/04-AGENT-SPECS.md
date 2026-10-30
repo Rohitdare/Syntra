@@ -114,7 +114,7 @@ SOURCE TEXT:
 class AnalystClaim(CamelModel):
     text: str = Field(min_length=20, max_length=400)
     importance: int = Field(ge=1, le=5)
-    page_hint: int | None = Field(default=None, gt=0)      # JSON key: pageHint
+    page_hint: int | None = Field(default=None, ge=1)      # JSON key: pageHint
 
 class AnalystOutputSchema(CamelModel):                     # LLM output; the agent's own Output model is separate
     title: str = Field(min_length=1, max_length=200)

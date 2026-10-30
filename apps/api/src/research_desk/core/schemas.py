@@ -1,5 +1,5 @@
 import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from pydantic.alias_generators import to_camel
@@ -11,7 +11,7 @@ class CamelModel(BaseModel):
     model_config = ConfigDict(
         alias_generator=to_camel,
         populate_by_name=True,
-        extra="forbid",
+        extra="ignore",
     )
 
 
@@ -123,12 +123,33 @@ class ProjectHeader(CamelModel):
     description: str | None = None
 
 
+class VerdictClaimSide(CamelModel):
+    """Claim details for one side of a comparative verdict."""
+
+    claim_id: str
+    source_id: str | None = None
+    source_tag: str
+    text: str
+
+
+class ConflictItem(CamelModel):
+    """Comparative verdict representing agreement, disagreement, or nuance between two claims."""
+
+    id: str
+    label: Literal["supports", "contradicts", "nuances", "unrelated"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str
+    similarity: float | None = None
+    a: VerdictClaimSide
+    b: VerdictClaimSide
+
+
 class ProjectDetailResponse(CamelModel):
     """Full detail view of a project, its sources, conflicts, briefs, and active jobs."""
 
     project: ProjectHeader
     sources: list[ProjectSourceItem]
-    conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    conflicts: list[ConflictItem] = Field(default_factory=list)
     briefs: list[dict[str, Any]] = Field(default_factory=list)
     active_jobs: list[ActiveJobItem] = Field(default_factory=list)
 
@@ -172,7 +193,7 @@ class SourceDetailResponse(CamelModel):
     summary: str | None = None
     topics: list[str] = Field(default_factory=list)
     claims: list[ClaimItem] = Field(default_factory=list)
-    verdicts: list[dict[str, Any]] = Field(default_factory=list)
+    verdicts: list[ConflictItem] = Field(default_factory=list)
 
 
 class AnalystClaim(CamelModel):
@@ -183,7 +204,7 @@ class AnalystClaim(CamelModel):
         ge=1, le=5, description="Significance of finding: 5=central, 1=minor detail"
     )
     page_hint: int | None = Field(
-        default=None, gt=0, description="Approximate source page if available"
+        default=None, ge=1, description="Approximate source page if available"
     )
 
 
@@ -212,6 +233,60 @@ class AnalystOutput(CamelModel):
 
     claim_count: int
     topics: list[str]
+
+
+class CriticCandidatePair(CamelModel):
+    """Candidate pair of claims prepared for Critic LLM evaluation."""
+
+    pair_id: str = Field(min_length=1, description="Deterministic pair key, e.g. vrd_<8hex>")
+    source_tag_a: str = Field(min_length=1, description="Source tag of claim A, e.g. S1")
+    claim_text_a: str = Field(min_length=1, description="Text of claim A")
+    source_tag_b: str = Field(min_length=1, description="Source tag of claim B, e.g. S2")
+    claim_text_b: str = Field(min_length=1, description="Text of claim B")
+
+
+class CriticVerdict(CamelModel):
+    """Verdict for an individual claim pair returned by the LLM."""
+
+    pair_id: str = Field(
+        description="Deterministic pair identifier matching requested candidate pair"
+    )
+    label: Literal["supports", "contradicts", "nuances", "unrelated"] = Field(
+        description="Relationship stance between the two claims"
+    )
+    confidence: float = Field(ge=0.0, le=1.0, description="Heuristic linguistic certainty score")
+    rationale: str = Field(
+        min_length=10,
+        max_length=300,
+        description="One-sentence explanation of agreement or difference",
+    )
+
+
+class CriticOutputSchema(CamelModel):
+    """Structured LLM output schema for Gemini provider validation."""
+
+    verdicts: list[CriticVerdict] = Field(description="Verdicts for all evaluated candidate pairs")
+
+
+class CriticInput(CamelModel):
+    """Input payload to run the Critic agent on a source."""
+
+    project_id: str
+    source_id: str
+
+
+class CriticOutput(CamelModel):
+    """Result payload emitted at the conclusion of critique."""
+
+    pairs_judged: int = Field(ge=0, description="Number of candidate pairs evaluated in this run")
+    supports: int = Field(ge=0, description="Count of supporting pairs")
+    contradicts: int = Field(ge=0, description="Count of contradicting pairs")
+    nuances: int = Field(ge=0, description="Count of nuanced pairs")
+    unrelated: int = Field(ge=0, description="Count of unrelated pairs")
+    skipped_existing: int = Field(
+        ge=0,
+        description="Count of candidate pairs skipped because already judged",
+    )
 
 
 class JobStatusResponse(CamelModel):

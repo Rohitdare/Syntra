@@ -82,10 +82,29 @@ export const ProjectHeaderSchema = z.object({
   description: z.string().nullable().optional(),
 });
 
+export const VerdictLabelSchema = z.enum(["supports", "contradicts", "nuances", "unrelated"]);
+
+export const VerdictClaimSideSchema = z.object({
+  claimId: z.string(),
+  sourceId: z.string().nullable().optional(),
+  sourceTag: z.string(),
+  text: z.string(),
+});
+
+export const ConflictItemSchema = z.object({
+  id: z.string(),
+  label: VerdictLabelSchema,
+  confidence: z.number().min(0).max(1),
+  rationale: z.string(),
+  similarity: z.number().nullable().optional(),
+  a: VerdictClaimSideSchema,
+  b: VerdictClaimSideSchema,
+});
+
 export const ProjectDetailResponseSchema = z.object({
   project: ProjectHeaderSchema,
   sources: z.array(ProjectSourceItemSchema).default([]),
-  conflicts: z.array(z.record(z.string(), z.unknown())).default([]),
+  conflicts: z.array(ConflictItemSchema).default([]),
   briefs: z.array(z.record(z.string(), z.unknown())).default([]),
   activeJobs: z.array(ActiveJobItemSchema).default([]),
 });
@@ -113,12 +132,32 @@ export const SourceDetailResponseSchema = z.object({
   summary: z.string().nullable().optional(),
   topics: z.array(z.string()).default([]),
   claims: z.array(ClaimItemSchema).default([]),
-  verdicts: z.array(z.record(z.string(), z.unknown())).default([]),
+  verdicts: z.array(ConflictItemSchema).default([]),
 });
 
 export const AnalystResultSchema = z.object({
   claimCount: z.number(),
   topics: z.array(z.string()),
+});
+
+export const CriticVerdictSchema = z.object({
+  pairId: z.string(),
+  label: VerdictLabelSchema,
+  confidence: z.number().min(0).max(1),
+  rationale: z.string().min(10).max(300),
+});
+
+export const CriticOutputSchema = z.object({
+  verdicts: z.array(CriticVerdictSchema),
+});
+
+export const CritiqueResultSchema = z.object({
+  pairsJudged: z.number().int().nonnegative(),
+  supports: z.number().int().nonnegative(),
+  contradicts: z.number().int().nonnegative(),
+  nuances: z.number().int().nonnegative(),
+  unrelated: z.number().int().nonnegative(),
+  skippedExisting: z.number().int().nonnegative(),
 });
 
 export const JobStatusResponseSchema = z.object({
@@ -161,3 +200,9 @@ export type SourceDetailResponse = z.infer<typeof SourceDetailResponseSchema>;
 export type AnalystResult = z.infer<typeof AnalystResultSchema>;
 export type JobStatusResponse = z.infer<typeof JobStatusResponseSchema>;
 export type StreamEvent = z.infer<typeof StreamEventSchema>;
+export type VerdictLabel = z.infer<typeof VerdictLabelSchema>;
+export type VerdictClaimSide = z.infer<typeof VerdictClaimSideSchema>;
+export type ConflictItem = z.infer<typeof ConflictItemSchema>;
+export type CriticVerdict = z.infer<typeof CriticVerdictSchema>;
+export type CriticOutput = z.infer<typeof CriticOutputSchema>;
+export type CritiqueResult = z.infer<typeof CritiqueResultSchema>;

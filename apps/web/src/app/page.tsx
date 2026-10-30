@@ -7,9 +7,6 @@ import { AppShell } from "@/components/layout/AppShell";
 import { CreateProjectModal } from "@/components/projects/CreateProjectModal";
 import { listProjects, ProjectListItem, ApiClientError } from "@/lib/api/client";
 
-// Re-export fetchHealth for backward compatibility
-export { fetchHealth } from "@/lib/api/client";
-
 export default function ResearchDashboard() {
   const router = useRouter();
 

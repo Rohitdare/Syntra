@@ -1,4 +1,13 @@
 {
+  "sourceId": "src_4f1b2c3d",
+  "claimIds": [
+    "clm_4f1b2c3d_00",
+    "clm_4f1b2c3d_01",
+    "clm_4f1b2c3d_02",
+    "clm_4f1b2c3d_03",
+    "clm_4f1b2c3d_04",
+    "clm_4f1b2c3d_05"
+  ],
   "claimCount": 6,
   "topics": [
     "AI Safety",

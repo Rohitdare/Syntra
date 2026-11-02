@@ -6,7 +6,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-from research_desk.core.config import get_settings
+from research_desk.core.config import get_database_url
 from research_desk.stores.models import Base
 
 # this is the Alembic Config object, which provides
@@ -19,9 +19,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Set database URL dynamically from app config
-db_url = get_settings().DATABASE_URL.get_secret_value()
-if db_url.startswith("postgresql://"):
-    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+db_url = get_database_url()
 config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
 target_metadata = Base.metadata

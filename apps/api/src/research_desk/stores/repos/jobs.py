@@ -191,6 +191,40 @@ class JobRepo:
         rowcount = getattr(res, "rowcount", 0)
         return int(rowcount or 0)
 
+    async def interrupt_active_on_startup(self) -> Sequence[Job]:
+        """Fail jobs left queued or running by the previous in-process API instance."""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        res = await self.session.execute(
+            select(Job)
+            .where(Job.status.in_(["queued", "running"]))
+            .order_by(Job.created_at.asc())
+            .with_for_update()
+        )
+        jobs = list(res.scalars().all())
+        for job in jobs:
+            job.status = "failed"
+            job.error_code = "INTERRUPTED"
+            job.error_message = "Job was interrupted when the API restarted. Retry this stage."
+            job.finished_at = now
+            await self.add_event(
+                job.id,
+                job.stage,
+                "runner",
+                "error",
+                message="Job was interrupted when the API restarted. Retry this stage.",
+                data={"code": "INTERRUPTED", "retryable": True},
+            )
+            await self.add_event(
+                job.id,
+                job.stage,
+                "runner",
+                "stage_end",
+                message="Stage interrupted",
+                data={"status": "failed", "code": "INTERRUPTED"},
+            )
+        await self.session.flush()
+        return jobs
+
     async def list_active_for_project(self, project_id: str) -> Sequence[Job]:
         """Find all active (queued or running) jobs in a project."""
         stmt = (

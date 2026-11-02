@@ -46,6 +46,8 @@ class ClaimPoint:
     embedding: list[float]
     importance: int = 3
     page_hint: int | None = None
+    evidence_quote: str = ""
+    evidence_chunk_ids: list[str] | None = None
     embedding_model: str = ""
 
 
@@ -186,6 +188,8 @@ class QdrantVectorStore(VectorStore):
                 "text": r.text,
                 "importance": r.importance,
                 "pageHint": r.page_hint,
+                "evidenceQuote": r.evidence_quote,
+                "evidenceChunkIds": r.evidence_chunk_ids or [],
                 "embeddingModel": r.embedding_model,
                 "schemaVersion": 1,
             }

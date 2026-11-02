@@ -15,6 +15,7 @@ Per docs/04-AGENT-SPECS.md Section 2 and docs/08-STAGE-4-ANALYST-IMPLEMENTATION-
 from __future__ import annotations
 
 import hashlib
+import unicodedata
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -25,13 +26,14 @@ from research_desk.agents.prompts import (
 )
 from research_desk.core.config import Settings, get_settings
 from research_desk.core.errors import AppError
-from research_desk.core.ids import claim_id
+from research_desk.core.ids import chunk_id, claim_id
 from research_desk.core.schemas import (
     AnalystClaim,
     AnalystInput,
     AnalystOutput,
     AnalystOutputSchema,
 )
+from research_desk.ingest.chunk import chunk_text
 from research_desk.providers.embeddings import EmbeddingProvider
 from research_desk.providers.llm import CallContext, LLMProvider
 from research_desk.stores.models import Claim
@@ -101,6 +103,39 @@ def sanitize_page_hint(
     return page_hint
 
 
+def resolve_evidence_chunk_ids(
+    *,
+    source_id: str,
+    source_text: str,
+    analyzed_text: str,
+    evidence_quote: str,
+    page_offsets: list[int],
+    target_chars: int,
+    overlap_chars: int,
+) -> list[str]:
+    """Return deterministic source chunk IDs containing a normalized verbatim excerpt."""
+    quote = _normalize_evidence_text(evidence_quote)
+    if len(quote) < 20:
+        return []
+    if quote not in _normalize_evidence_text(analyzed_text):
+        return []
+    return [
+        chunk_id(source_id, chunk.index)
+        for chunk in chunk_text(
+            source_text,
+            page_offsets=page_offsets,
+            target_chars=target_chars,
+            overlap_chars=overlap_chars,
+        )
+        if quote in _normalize_evidence_text(chunk.text)
+    ]
+
+
+def _normalize_evidence_text(value: str) -> str:
+    """Normalize Unicode and whitespace while preserving the excerpt's letter case."""
+    return " ".join(unicodedata.normalize("NFKC", value).split())
+
+
 @dataclass(frozen=True)
 class AnalystRepos:
     """Repositories required by the Analyst agent."""
@@ -113,7 +148,7 @@ class AnalystRepos:
 class AnalystDeps:
     """Injected dependencies for the Analyst agent."""
 
-    repos: Any  # Supports AnalystRepos or any object with .sources and .claims
+    repos: AnalystRepos
     vectors: VectorStore
     embeddings: EmbeddingProvider
     llm: LLMProvider
@@ -193,9 +228,21 @@ async def run(
     # Cap claims at MAX_CLAIMS_PER_SOURCE
     raw_claims = llm_data.claims[: cfg.MAX_CLAIMS_PER_SOURCE]
 
-    # Sanitize page_hints and build validated claims
+    # Require a verbatim source excerpt and resolve it to deterministic chunk keys.
     sanitized_claims: list[AnalystClaim] = []
+    evidence_chunk_ids_by_claim: list[list[str]] = []
     for c in raw_claims:
+        evidence_chunk_ids = resolve_evidence_chunk_ids(
+            source_id=inp.source_id,
+            source_text=raw_text,
+            analyzed_text=text_to_analyze,
+            evidence_quote=c.evidence_quote,
+            page_offsets=list(source_text_row.page_offsets or [0]),
+            target_chars=cfg.CHUNK_TARGET_CHARS,
+            overlap_chars=cfg.CHUNK_OVERLAP_CHARS,
+        )
+        if not evidence_chunk_ids:
+            continue
         sanitized_page_hint = sanitize_page_hint(
             page_hint=c.page_hint,
             source_kind=source.kind,
@@ -206,7 +253,17 @@ async def run(
                 text=c.text,
                 importance=c.importance,
                 page_hint=sanitized_page_hint,
+                evidence_quote=c.evidence_quote,
             )
+        )
+        evidence_chunk_ids_by_claim.append(evidence_chunk_ids)
+
+    omitted_claims = len(raw_claims) - len(sanitized_claims)
+    if omitted_claims:
+        await emit(
+            "warning",
+            {"count": omitted_claims},
+            "Claims without a verifiable source passage were omitted.",
         )
 
     # 5. Batched embedding generation
@@ -245,6 +302,8 @@ async def run(
                 text=c.text,
                 text_hash=text_hash,
                 importance=c.importance,
+                evidence_quote=c.evidence_quote,
+                evidence_chunk_ids=evidence_chunk_ids_by_claim[idx],
                 page_hint=c.page_hint,
                 embedding_model=cfg.GEMINI_EMBEDDING_MODEL,
             )
@@ -281,6 +340,8 @@ async def run(
             embedding=embeddings[c.claim_index],
             importance=c.importance,
             page_hint=c.page_hint,
+            evidence_quote=c.evidence_quote or "",
+            evidence_chunk_ids=c.evidence_chunk_ids,
             embedding_model=cfg.GEMINI_EMBEDDING_MODEL,
         )
         for c in db_claims
@@ -315,6 +376,8 @@ async def run(
     )
 
     output = AnalystOutput(
+        source_id=inp.source_id,
+        claim_ids=[claim.id for claim in db_claims],
         claim_count=len(db_claims),
         topics=list(llm_data.topics),
     )

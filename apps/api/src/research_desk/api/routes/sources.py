@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
 import uuid
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Header, Request, status
 from fastapi.responses import StreamingResponse
@@ -24,21 +25,28 @@ from research_desk.core.errors import AppError
 from research_desk.core.schemas import (
     AnalystInput,
     ClaimItem,
+    ConflictItem,
+    CriticInput,
     DeleteSourceResponse,
     ProjectSourceItem,
     SourceDetailResponse,
     SourceStages,
+    VerdictClaimSide,
 )
 from research_desk.orchestrator.events import EventSink
 from research_desk.orchestrator.pipeline import PipelineOrchestrator
 from research_desk.stores.db import DbSession, get_db
 from research_desk.stores.models import Project, User
+from research_desk.stores.repos.briefs import BriefRepo
 from research_desk.stores.repos.claims import ClaimRepo
 from research_desk.stores.repos.jobs import JobRepo
+from research_desk.stores.repos.projects import ProjectRepo
 from research_desk.stores.repos.sources import SourceRepo
+from research_desk.stores.repos.verdicts import VerdictRepo
 from research_desk.stores.vector import VectorStore
 
 router = APIRouter(prefix="/api/projects/{project_id}/sources", tags=["sources"])
+SOURCE_ID_PATTERN = re.compile(r"^src_[0-9a-f]{8}$")
 
 
 def _validate_idempotency_key(key: str | None) -> str | None:
@@ -261,6 +269,74 @@ async def ingest_source(
     )
 
 
+@router.post("/{source_id}/critique", status_code=status.HTTP_200_OK)
+async def critique_source(
+    source_id: str,
+    request: Request,
+    project: Project = Depends(get_owned_project),
+    current_user: User = Depends(get_current_user),
+    session: DbSession = Depends(get_db),
+    orchestrator: PipelineOrchestrator = Depends(get_pipeline_orchestrator),
+    event_sink: EventSink = Depends(get_event_sink),
+    idempotency_key_header: str | None = Header(None, alias="Idempotency-Key"),
+) -> StreamingResponse:
+    """Run cross-source critique for an analyzed source."""
+    source = await SourceRepo(session).get(project.id, source_id)
+    if source is None:
+        raise AppError("NOT_FOUND", "Source not found", http_status=404, retryable=False)
+    if not source.stage_analyzed:
+        raise AppError(
+            "BAD_REQUEST",
+            "Source must be analyzed before critique",
+            http_status=400,
+            retryable=False,
+        )
+
+    idempotency_key = _validate_idempotency_key(idempotency_key_header)
+    input_hash = hashlib.sha256(f"{project.id}:{source.id}:critique".encode()).hexdigest()
+    jobs = JobRepo(session)
+    same_flight = await jobs.get_active_single_flight(
+        project_id=project.id, stage="critique", source_id=source.id, input_hash=input_hash
+    )
+    if same_flight is None and await jobs.has_active_for_source(project.id, source.id):
+        raise AppError(
+            "JOB_ACTIVE",
+            "A stage is still running for this source.",
+            http_status=409,
+            retryable=True,
+        )
+    if same_flight is None and any(
+        job.stage == "critique" for job in await jobs.list_active_for_project(project.id)
+    ):
+        raise AppError(
+            "JOB_ACTIVE",
+            "A critique is already running for this project.",
+            http_status=409,
+            retryable=True,
+        )
+
+    job, _ = await orchestrator.run_job(
+        stage="critique",
+        project_id=project.id,
+        user_id=current_user.id,
+        inp=CriticInput(project_id=project.id, source_id=source.id),
+        input_hash=input_hash,
+        source_id=source.id,
+        idempotency_key=idempotency_key,
+    )
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        async for msg in event_sink.subscribe(job.id, since_seq=0):
+            yield msg.to_ndjson() + "\n"
+
+    req_id = getattr(request.state, "request_id", None) or f"req_{uuid.uuid4().hex[:24]}"
+    return StreamingResponse(
+        event_generator(),
+        media_type="application/x-ndjson",
+        headers={"X-Request-Id": req_id, "X-Job-Id": str(job.id)},
+    )
+
+
 @router.post("/{source_id}/analyze", status_code=status.HTTP_200_OK)
 async def analyze_source(
     source_id: str,
@@ -369,6 +445,8 @@ async def get_source(
             text=c.text,
             importance=c.importance,
             page_hint=c.page_hint,
+            evidence_quote=c.evidence_quote,
+            evidence_chunk_ids=list(c.evidence_chunk_ids or []),
             created_at=c.created_at.isoformat() if c.created_at else None,
         )
         for c in claims
@@ -393,7 +471,28 @@ async def get_source(
         summary=source.summary,
         topics=list(source.topics or []),
         claims=claim_items,
-        verdicts=[],
+        verdicts=[
+            ConflictItem(
+                id=v.id,
+                label=cast(Literal["supports", "contradicts", "nuances", "unrelated"], v.label),
+                confidence=v.confidence,
+                rationale=v.rationale,
+                similarity=v.similarity,
+                a=VerdictClaimSide(
+                    claim_id=v.claim_key_a,
+                    source_id=v.source_id_a,
+                    source_tag=v.source_tag_a,
+                    text=v.claim_text_a,
+                ),
+                b=VerdictClaimSide(
+                    claim_id=v.claim_key_b,
+                    source_id=v.source_id_b,
+                    source_tag=v.source_tag_b,
+                    text=v.claim_text_b,
+                ),
+            )
+            for v in await VerdictRepo(session).list_by_source(project.id, source_id)
+        ],
     )
 
 
@@ -408,12 +507,21 @@ async def delete_source(
     source_repo = SourceRepo(session)
     source = await source_repo.get(project.id, source_id)
     if source is None:
-        raise AppError(
-            code="NOT_FOUND",
-            message="Source not found",
-            http_status=404,
-            retryable=False,
-        )
+        # Explicitly retry project-scoped Qdrant cleanup after a prior
+        # PostgreSQL-first deletion. Never pass an arbitrary path value to Qdrant.
+        if not SOURCE_ID_PATTERN.fullmatch(source_id):
+            raise AppError("NOT_FOUND", "Source not found", http_status=404, retryable=False)
+        await session.commit()
+        try:
+            await vectors.delete_source(project.id, source_id)
+        except Exception as exc:
+            raise AppError(
+                "VECTOR_DB_ERROR",
+                "Source cleanup is still pending because the search index is unavailable.",
+                http_status=503,
+                retryable=True,
+            ) from exc
+        return DeleteSourceResponse(deleted=True)
 
     job_repo = JobRepo(session)
     if await job_repo.has_active_for_source(project.id, source_id):
@@ -424,19 +532,36 @@ async def delete_source(
             retryable=True,
         )
 
-    # 1. Purge points from Qdrant
+    await ProjectRepo(session).acquire_evidence_write_lock(project.id)
+    source = await source_repo.get(project.id, source_id)
+    if source is None:
+        await session.commit()
+        try:
+            await vectors.delete_source(project.id, source_id)
+        except Exception as exc:
+            raise AppError(
+                "VECTOR_DB_ERROR",
+                "Source cleanup is still pending because the search index is unavailable.",
+                http_status=503,
+                retryable=True,
+            ) from exc
+        return DeleteSourceResponse(deleted=True)
+
+    # 1. Delete PostgreSQL evidence and briefs referencing it in one transaction.
+    await BriefRepo(session).delete_referencing_source(project.id, source_id)
+    await source_repo.delete(project.id, source_id)
+    await session.commit()
+
+    # 2. Purge vectors. If this fails, PostgreSQL post-filtering makes the
+    # orphaned points invisible; repeating DELETE retries this project-scoped cleanup.
     try:
         await vectors.delete_source(project.id, source_id)
     except Exception as exc:
         raise AppError(
-            code="VECTOR_DB_ERROR",
-            message=f"Vector database failed to delete source points: {exc}",
+            "VECTOR_DB_ERROR",
+            "Source records were removed; vector cleanup is pending and can be retried.",
             http_status=503,
             retryable=True,
         ) from exc
-
-    # 2. Delete source record from PostgreSQL (cascades claims, texts, verdicts)
-    await source_repo.delete(project.id, source_id)
-    await session.commit()
 
     return DeleteSourceResponse(deleted=True)

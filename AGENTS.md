@@ -22,6 +22,8 @@ Browser (Next.js UI, pipeline runner, trace panel) -> FastAPI (auth, validation,
 
 Agents never call each other. They communicate only through persisted records. Only the orchestrator calls agents.
 
+The approved PRD and design specify four agents: Collector, Analyst, Critic, and Writer. If a task mentions a fifth agent, do not invent one; reconcile the request against those source specifications and document the discrepancy unless the product documents are explicitly amended.
+
 | Agent | LLM tier | Reads | Writes |
 |---|---|---|---|
 | Collector | none (embeddings only) | - | sources, source text (PostgreSQL); chunks (Qdrant) |
@@ -54,9 +56,9 @@ Frontend: Next.js App Router, React, TypeScript strict, Tailwind, Zod, Vitest, n
 ## 5. Key behaviors (full prompts and schemas: docs/04)
 
 - Collector: validate input, extract text (off the event loop, time-boxed), clean (cut references, headers, footers), chunk (about 1200 chars, 150 overlap), embed in batches, write source and chunks. Text under 500 chars returns NO_TEXT.
-- Analyst: ONE LLM call returns a summary and at most 8 self-contained claims; claims are embedded in one batch.
+- Analyst: ONE LLM call returns a summary and at most 8 self-contained claims with exact supporting excerpts; validate excerpts against the submitted source text and persist deterministic source chunk references before marking analysis complete. Claims are embedded in one batch.
 - Critic: ONE batched Qdrant query (filter type=claim, projectId; must_not sourceId; score threshold `CRITIC_MIN_SIMILARITY`) finds, for the new source's claims, the top 3 most similar claims from OTHER sources; then ONE batched LLM call labels each pair supports, contradicts, nuances or unrelated. Be conservative: a scope difference is `nuances`, not `contradicts`. Skip pairs already judged. One critique per project at a time.
-- Writer: embed the question, retrieve chunks, claims and conflicts; tag sources S1..Sn; ONE LLM call; validate every [S#] tag; never invent facts; include disagreements and gaps.
+- Writer: embed the question, retrieve chunks, claims and conflicts; tag sources S1..Sn; ONE LLM call; validate every [S#] tag; never invent facts; include disagreements and gaps. Persist a project-scoped Pydantic research-context snapshot of evidence IDs with each brief.
 - Endpoints, error codes, the streaming event format and recovery: docs/05.
 
 ## 6. Config and secrets
@@ -107,7 +109,7 @@ Never hardcode keys or URLs with credentials. Never read, print or paste `.env*`
 Stages (one at a time, in order): 0 scaffold, tooling and config; 1 databases, jobs, providers and adapters; 2 Collector; 3 UI shell and runner; 4 Analyst; 5 Critic; 6 Writer and Ask tab; 7 polish, robustness and production hardening; 8 deploy, README, demo data.
 
 Status (update this list at the end of every stage):
-- [x] 0  - [x] 1  - [x] 2  - [x] 3  - [ ] 4  - [ ] 5  - [ ] 6  - [ ] 7  - [ ] 8
+- [ ] 0  - [x] 1  - [x] 2  - [x] 3  - [ ] 4  - [ ] 5  - [ ] 6  - [ ] 7  - [ ] 8
 
 Done means: lint, type check and tests pass for every area touched; the stage's manual check works; docs updated if a contract changed; a commit exists.
 

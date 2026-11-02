@@ -89,7 +89,7 @@ npm run dev                                   # http://localhost:3000
 
 ### Environment variables
 
-Three example files are committed with empty values: `.env.example` (Compose), `apps/api/.env.example`, `apps/web/.env.example`. Any constant in `docs/02-DESIGN-DOC.md` section 7 can also be set as an environment variable of the same name.
+Three example files are committed with empty values: `.env.example` (Compose), `apps/api/.env.example`, `apps/web/.env.example`. The API always loads `apps/api/.env` regardless of the working directory; process environment variables override that file. `DATABASE_URL` must be set for both FastAPI and Alembic, which share the same resolver. Any constant in `docs/02-DESIGN-DOC.md` section 7 can also be set as an environment variable of the same name.
 
 `.env.example` (repository root, used by Docker Compose):
 

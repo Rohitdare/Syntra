@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { createProject, ApiClientError } from "@/lib/api/client";
+import { XIcon, SparklesIcon } from "@/components/ui/Icons";
 
 export interface CreateProjectModalProps {
   isOpen: boolean;
@@ -12,16 +13,17 @@ export interface CreateProjectModalProps {
 export function CreateProjectModal({ isOpen, onClose, onSuccess }: CreateProjectModalProps) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
-  const modalRef = useRef<HTMLDivElement>(null);
   const triggerElementRef = useRef<HTMLElement | null>(null);
 
   function resetForm() {
     setName("");
     setDescription("");
+    setShowAdvanced(false);
     setError(null);
     setIsSubmitting(false);
   }
@@ -36,7 +38,7 @@ export function CreateProjectModal({ isOpen, onClose, onSuccess }: CreateProject
   useEffect(() => {
     if (isOpen) {
       triggerElementRef.current = document.activeElement as HTMLElement | null;
-      inputRef.current?.focus();
+      setTimeout(() => inputRef.current?.focus(), 50);
     } else if (triggerElementRef.current) {
       triggerElementRef.current.focus();
     }
@@ -61,13 +63,13 @@ export function CreateProjectModal({ isOpen, onClose, onSuccess }: CreateProject
 
     const trimmedName = name.trim();
     if (!trimmedName) {
-      setError("Please enter a research project name.");
+      setError("Please specify a research topic or project name.");
       inputRef.current?.focus();
       return;
     }
 
     if (trimmedName.length > 80) {
-      setError("Project name cannot exceed 80 characters.");
+      setError("Research topic title cannot exceed 80 characters.");
       return;
     }
 
@@ -85,7 +87,7 @@ export function CreateProjectModal({ isOpen, onClose, onSuccess }: CreateProject
       } else if (err instanceof Error) {
         setError(err.message);
       } else {
-        setError("Failed to create project. Please ensure the backend server is reachable.");
+        setError("Failed to create research workspace. Please ensure the backend is connected.");
       }
       setIsSubmitting(false);
     }
@@ -93,117 +95,111 @@ export function CreateProjectModal({ isOpen, onClose, onSuccess }: CreateProject
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs transition-opacity"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs transition-opacity"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="create-project-title"
+      aria-labelledby="create-research-title"
       onClick={(e) => {
-        if (e.target === e.currentTarget && !isSubmitting) {
-          handleClose();
-        }
+        if (e.target === e.currentTarget && !isSubmitting) handleClose();
       }}
     >
-      <div
-        ref={modalRef}
-        className="w-full max-w-md bg-[var(--color-card)] border border-[var(--color-border)] rounded-xl shadow-2xl p-6 space-y-5 transition-all text-[var(--color-text-primary)]"
-      >
-        <div className="flex items-start justify-between">
-          <div>
-            <h2 id="create-project-title" className="text-lg font-semibold tracking-tight">
+      <div className="w-full max-w-lg bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl shadow-xl overflow-hidden transition-all text-[var(--color-text-primary)]">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 pt-5 pb-3">
+          <div className="flex items-center space-x-2 text-[var(--color-primary)]">
+            <SparklesIcon className="w-4 h-4" />
+            <span className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
               New Research Workspace
-            </h2>
-            <p className="text-xs text-[var(--color-text-secondary)] mt-1">
-              Create a dedicated workspace to collect and analyze research evidence.
-            </p>
+            </span>
           </div>
           <button
             type="button"
             onClick={handleClose}
             disabled={isSubmitting}
-            className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] p-1 rounded-md text-sm transition-colors"
             aria-label="Close dialog"
+            className="p-1 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-secondary)] transition-colors cursor-pointer"
           >
-            ✕
+            <XIcon className="w-4 h-4" />
           </button>
         </div>
 
-        {error && (
-          <div
-            className="p-3 bg-[var(--color-error-soft)] border border-[var(--color-error)] text-[var(--color-error)] text-xs rounded-lg flex items-start space-x-2"
-            role="alert"
-          >
-            <span className="font-semibold text-sm leading-none">!</span>
-            <span>{error}</span>
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Content Form */}
+        <form onSubmit={handleSubmit} className="px-6 pb-6 pt-1 space-y-5">
           <div className="space-y-1.5">
-            <label
-              htmlFor="project-name-input"
-              className="block text-xs font-medium text-[var(--color-text-primary)]"
+            <h2 id="create-research-title" className="text-lg font-semibold tracking-tight">
+              What would you like to research?
+            </h2>
+            <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
+              Syntra will organize your collected evidence, highlight contradictions, and synthesize answers.
+            </p>
+          </div>
+
+          {error && (
+            <div
+              className="p-3 bg-[var(--color-error-soft)] border border-[var(--color-error)]/30 rounded-xl text-xs text-[var(--color-error)]"
+              role="alert"
             >
-              Project Name <span className="text-[var(--color-error)]">*</span>
-            </label>
-            <input
-              id="project-name-input"
-              ref={inputRef}
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={isSubmitting}
-              placeholder="e.g. AI Alignment Approaches"
-              maxLength={80}
-              className="w-full px-3 py-2 text-sm bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] transition-colors"
-              required
-            />
-            <div className="flex justify-between text-[11px] text-[var(--color-text-muted)] px-0.5">
-              <span>Required</span>
-              <span>{name.length}/80</span>
+              {error}
             </div>
+          )}
+
+          <div className="space-y-3">
+            <div>
+              <input
+                ref={inputRef}
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Constitutional AI and Multi-Turn Alignment"
+                maxLength={80}
+                disabled={isSubmitting}
+                className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-secondary)] focus:bg-[var(--color-surface)] focus:border-[var(--color-primary)] transition-colors placeholder:text-[var(--color-text-muted)] text-[var(--color-text-primary)]"
+              />
+            </div>
+
+            {/* Progressive disclosure for additional scope/description */}
+            {!showAdvanced ? (
+              <button
+                type="button"
+                onClick={() => setShowAdvanced(true)}
+                className="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors flex items-center space-x-1 cursor-pointer font-medium"
+              >
+                <span>+ Add optional description or scope</span>
+              </button>
+            ) : (
+              <div className="space-y-1.5 pt-1 animate-in fade-in duration-150">
+                <label className="text-[11px] font-medium text-[var(--color-text-secondary)]">
+                  Research Scope & Notes (optional)
+                </label>
+                <textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Key questions to investigate, focal points, or background context..."
+                  rows={3}
+                  maxLength={300}
+                  disabled={isSubmitting}
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-secondary)] focus:bg-[var(--color-surface)] focus:border-[var(--color-primary)] transition-colors placeholder:text-[var(--color-text-muted)] text-[var(--color-text-primary)] resize-none"
+                />
+              </div>
+            )}
           </div>
 
-          <div className="space-y-1.5">
-            <label
-              htmlFor="project-desc-input"
-              className="block text-xs font-medium text-[var(--color-text-primary)]"
-            >
-              Description <span className="text-[var(--color-text-muted)] font-normal">(Optional)</span>
-            </label>
-            <textarea
-              id="project-desc-input"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              disabled={isSubmitting}
-              placeholder="What core research question or evidence are you investigating?"
-              rows={3}
-              maxLength={500}
-              className="w-full px-3 py-2 text-sm bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] transition-colors resize-none"
-            />
-          </div>
-
-          <div className="flex items-center justify-end space-x-2 pt-2 border-t border-[var(--color-border)]">
+          {/* Action Buttons */}
+          <div className="flex items-center justify-end space-x-2 pt-2 border-t border-[var(--color-border-subtle)]">
             <button
               type="button"
               onClick={handleClose}
               disabled={isSubmitting}
-              className="px-3.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface)] rounded-md transition-colors"
+              className="px-3.5 py-1.5 text-xs font-medium rounded-lg text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-secondary)] transition-colors cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isSubmitting || !name.trim()}
-              className="px-4 py-1.5 text-xs font-medium bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white rounded-md transition-colors shadow-xs disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1.5"
+              className="px-4 py-1.5 text-xs font-medium rounded-lg bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] disabled:opacity-50 text-white transition-colors shadow-xs cursor-pointer"
             >
-              {isSubmitting ? (
-                <>
-                  <span className="inline-block w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  <span>Creating...</span>
-                </>
-              ) : (
-                <span>Create Project</span>
-              )}
+              {isSubmitting ? "Creating workspace..." : "Create Workspace"}
             </button>
           </div>
         </form>

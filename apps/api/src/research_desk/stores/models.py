@@ -158,6 +158,8 @@ class Claim(Base):
         CheckConstraint("importance >= 1 AND importance <= 5", name="ck_claims_importance"),
         nullable=False,
     )
+    evidence_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_chunk_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     page_hint: Mapped[int | None] = mapped_column(Integer, nullable=True)
     embedding_model: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(

@@ -18,9 +18,12 @@ Per docs/04-AGENT-SPECS.md Section 3 and docs/09-STAGE-5-CRITIC-IMPLEMENTATION-P
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, AsyncIterator
 
 from research_desk.agents.prompts import (
     CRITIC_SYSTEM_PROMPT,
@@ -57,7 +60,7 @@ class CriticRepos:
 class CriticDeps:
     """Injected dependencies for the Critic agent."""
 
-    repos: Any  # Supports CriticRepos or any object with .sources, .claims, .verdicts
+    repos: CriticRepos
     vectors: VectorStore
     llm: LLMProvider
     cfg: Settings | None = None
@@ -82,6 +85,36 @@ class _CandidatePairInfo:
     similarity: float
 
 
+_PROJECT_LOCKS: dict[str, tuple[asyncio.Lock, int]] = {}
+_PROJECT_LOCKS_GUARD = threading.Lock()
+
+
+@asynccontextmanager
+async def _project_lock(project_id: str) -> AsyncIterator[None]:
+    """Serialize Critic runs per project within the single-process API instance."""
+    with _PROJECT_LOCKS_GUARD:
+        lock, references = _PROJECT_LOCKS.get(project_id, (asyncio.Lock(), 0))
+        _PROJECT_LOCKS[project_id] = (lock, references + 1)
+    try:
+        async with lock:
+            yield
+    finally:
+        with _PROJECT_LOCKS_GUARD:
+            current_lock, references = _PROJECT_LOCKS[project_id]
+            if references == 1:
+                del _PROJECT_LOCKS[project_id]
+            else:
+                _PROJECT_LOCKS[project_id] = (current_lock, references - 1)
+
+
+async def _end_read_transaction(deps: CriticDeps) -> None:
+    """Release the shared request session before calling an external service."""
+    session = getattr(deps.repos.sources, "session", None)
+    if session is not None and session.in_transaction():
+        # Read-only commit preserves ORM values because expire_on_commit is disabled.
+        await session.commit()
+
+
 async def run(
     inp: CriticInput,
     deps: CriticDeps,
@@ -89,6 +122,16 @@ async def run(
     ctx: CallContext,
 ) -> CriticOutput:
     """Execute the Critic agent workflow."""
+    async with _project_lock(inp.project_id):
+        return await _run_locked(inp, deps, emit, ctx)
+
+
+async def _run_locked(
+    inp: CriticInput,
+    deps: CriticDeps,
+    emit: Emit,
+    ctx: CallContext,
+) -> CriticOutput:
     cfg = deps.cfg or get_settings()
 
     await emit("stage_start", None, "Starting cross-source claim critique...")
@@ -108,6 +151,7 @@ async def run(
 
     # 2. Retrieve the source's claims from PostgreSQL
     source_claims = await deps.repos.claims.list_by_source(inp.project_id, inp.source_id)
+    await _end_read_transaction(deps)
     if not source_claims:
         await deps.repos.sources.update_stage_flags(
             project_id=inp.project_id,
@@ -135,22 +179,16 @@ async def run(
         await deps.repos.sources.update_stage_flags(
             project_id=inp.project_id,
             source_id=inp.source_id,
-            stage_critiqued=True,
-            last_error=None,
+            stage_critiqued=False,
+            last_error="VECTOR_INDEX_INCOMPLETE",
         )
         if hasattr(deps.repos.sources, "session"):
             await deps.repos.sources.session.commit()
-        await emit("step", None, "No claim vectors indexed in vector store; skipping critique.")
-        output = CriticOutput(
-            pairs_judged=0,
-            supports=0,
-            contradicts=0,
-            nuances=0,
-            unrelated=0,
-            skipped_existing=0,
+        raise AppError(
+            "VECTOR_DB_ERROR",
+            "Claim vectors are missing for this analyzed source; retry after index repair.",
+            retryable=True,
         )
-        await emit("result", output.model_dump(by_alias=True), "Done")
-        return output
 
     # 4. Search for similar claims from other sources in ONE batched query (Query Q2)
     await emit("doc_read", {"count": len(claim_vectors)}, "Searching similar claims...")
@@ -241,6 +279,7 @@ async def run(
     # 7. Deduplicate against already-judged pairs in PostgreSQL (Query Q3)
     candidate_pids = list(candidates.keys())
     judged_pids = await deps.repos.verdicts.get_judged_pair_keys(inp.project_id, candidate_pids)
+    await _end_read_transaction(deps)
     unjudged_candidates = [cand for pid, cand in candidates.items() if pid not in judged_pids]
     skipped_existing = len(judged_pids)
 
@@ -333,7 +372,6 @@ async def run(
             if v.pair_id in missing_pids and v.pair_id not in received_verdicts:
                 received_verdicts[v.pair_id] = v
 
-    still_missing_count = len(requested_pids) - len(received_verdicts)
     excess_count = len(excess_candidates)
 
     # 13. Build and persist validated verdicts into PostgreSQL
@@ -359,13 +397,18 @@ async def run(
             )
         )
 
+    await deps.repos.verdicts.acquire_project_write_lock(inp.project_id)
+    final_judged = await deps.repos.verdicts.get_judged_pair_keys(
+        inp.project_id,
+        list(requested_pids),
+    )
+    concurrent_judged = final_judged - judged_pids
+    db_verdicts = [verdict for verdict in db_verdicts if verdict.id not in final_judged]
+    skipped_existing += len(concurrent_judged)
+    still_missing_count = len(requested_pids - set(received_verdicts) - final_judged)
+
     if db_verdicts:
         await deps.repos.verdicts.upsert_verdicts(inp.project_id, db_verdicts)
-        await emit(
-            "doc_write",
-            {"docType": "verdict", "count": len(db_verdicts)},
-            f"Saved {len(db_verdicts)} verdicts",
-        )
 
     # 14. Partial failure vs Full completion handling
     if still_missing_count > 0 or excess_count > 0:
@@ -378,6 +421,13 @@ async def run(
         )
         if hasattr(deps.repos.sources, "session"):
             await deps.repos.sources.session.commit()
+
+        if db_verdicts:
+            await emit(
+                "doc_write",
+                {"docType": "verdict", "count": len(db_verdicts)},
+                f"Saved {len(db_verdicts)} verdicts",
+            )
 
         err_msg = (
             f"Critique partially completed: {len(db_verdicts)} verdicts saved, "
@@ -403,6 +453,13 @@ async def run(
     )
     if hasattr(deps.repos.sources, "session"):
         await deps.repos.sources.session.commit()
+
+    if db_verdicts:
+        await emit(
+            "doc_write",
+            {"docType": "verdict", "count": len(db_verdicts)},
+            f"Saved {len(db_verdicts)} verdicts",
+        )
 
     supports_count = sum(1 for v in db_verdicts if v.label == "supports")
     contradicts_count = sum(1 for v in db_verdicts if v.label == "contradicts")

@@ -80,6 +80,8 @@ docs/PROJECT-CONTEXT-RECOVERY.md
 docs/*-REPORT.md
 docs/CODEBASE_UNDERSTANDING.md
 docs/NEXT_STEPS.md
+docs/DEFERRED-VERIFICATION.md
+docs/*VERIFICATION*.md
 
 # Next.js / TypeScript build artifacts
 *.tsbuildinfo

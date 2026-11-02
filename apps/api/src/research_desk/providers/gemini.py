@@ -34,6 +34,69 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
+_GEMINI_JSON_SCHEMA_KEYS = frozenset(
+    {
+        "$anchor",
+        "$defs",
+        "$id",
+        "$ref",
+        "additionalProperties",
+        "anyOf",
+        "description",
+        "enum",
+        "format",
+        "items",
+        "maxItems",
+        "maximum",
+        "minItems",
+        "minimum",
+        "oneOf",
+        "prefixItems",
+        "properties",
+        "propertyOrdering",
+        "required",
+        "title",
+        "type",
+    }
+)
+
+
+def _filter_gemini_json_schema(value: Any) -> Any:
+    """Keep Gemini-supported JSON Schema keywords and preserve JSON key casing."""
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            if key not in _GEMINI_JSON_SCHEMA_KEYS:
+                continue
+            if key in {"$defs", "properties"} and isinstance(item, dict):
+                result[key] = {
+                    name: _filter_gemini_json_schema(child) for name, child in item.items()
+                }
+            elif key in {"items", "additionalProperties"} and isinstance(item, dict):
+                result[key] = _filter_gemini_json_schema(item)
+            elif key in {"anyOf", "oneOf", "prefixItems"} and isinstance(item, list):
+                result[key] = [_filter_gemini_json_schema(child) for child in item]
+            else:
+                result[key] = item
+        return result
+    if isinstance(value, list):
+        return [_filter_gemini_json_schema(item) for item in value]
+    return value
+
+
+def _structured_output_config(
+    schema: type[BaseModel], *, system: str, temperature: float
+) -> types.GenerateContentConfig:
+    """Build Gemini's JSON schema request while keeping Pydantic validation local."""
+    response_json_schema = _filter_gemini_json_schema(schema.model_json_schema(by_alias=True))
+    return types.GenerateContentConfig(
+        system_instruction=system,
+        temperature=temperature,
+        response_mime_type="application/json",
+        response_json_schema=response_json_schema,
+    )
+
+
 UsageRecorder = Callable[
     [uuid.UUID, str | None, uuid.UUID | None, str, str, str, int, int, int],
     Coroutine[Any, Any, None],
@@ -102,11 +165,10 @@ class GeminiProvider(LLMProvider, EmbeddingProvider):
             await self._pace(self.settings.LLM_MIN_INTERVAL_MS, is_llm=True)
 
             async with self._concurrency_sem:
-                config = types.GenerateContentConfig(
-                    system_instruction=system,
+                config = _structured_output_config(
+                    schema,
+                    system=system,
                     temperature=temperature,
-                    response_mime_type="application/json",
-                    response_schema=schema,
                 )
 
                 try:

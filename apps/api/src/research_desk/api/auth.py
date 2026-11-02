@@ -70,18 +70,19 @@ async def get_current_user(
             retryable=False,
         )
 
-    # Provider-independent JWT token verification hook
-    # Real JWKS verification can be wired when external auth provider is chosen
-    # For now, token serves as auth_subject identifier
-    auth_subject = f"jwt:{token}"
-    return await get_or_create_user(
-        session=session,
-        auth_subject=auth_subject,
+    # No issuer/JWKS verifier is configured in this build. Never turn an
+    # unverified bearer string into a user identity.
+    raise AppError(
+        code="UNAUTHENTICATED",
+        message="JWT verification is unavailable; the bearer token was rejected.",
+        http_status=401,
+        retryable=False,
     )
 
 
 async def get_owned_project(
     project_id: str,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: DbSession = Depends(get_db),
 ) -> Project:
@@ -91,7 +92,15 @@ async def get_owned_project(
     preventing project existence leakage.
     """
     repo = ProjectRepo(session)
-    project = await repo.get_owned(owner_id=current_user.id, project_id=project_id)
+    route = request.scope.get("route")
+    is_project_delete_retry = (
+        request.method == "DELETE" and getattr(route, "path", None) == "/api/projects/{project_id}"
+    )
+    project = await repo.get_owned(
+        owner_id=current_user.id,
+        project_id=project_id,
+        include_deleting=is_project_delete_retry,
+    )
     if project is None:
         raise AppError(
             code="NOT_FOUND",

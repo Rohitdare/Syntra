@@ -1,17 +1,20 @@
 """Application configuration and typed settings using pydantic-settings."""
 
 import sys
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+API_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=API_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -115,3 +118,14 @@ def get_settings() -> Settings:
     except Exception as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         raise
+
+
+def get_database_url(settings: Settings | None = None) -> str:
+    """Return the configured async PostgreSQL URL without a cwd-dependent fallback."""
+    cfg = settings or get_settings()
+    db_url = cfg.DATABASE_URL.get_secret_value().strip()
+    if not db_url:
+        raise ValueError("DATABASE_URL must be configured for both the API and Alembic.")
+    if db_url.startswith("postgresql://"):
+        return db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return db_url

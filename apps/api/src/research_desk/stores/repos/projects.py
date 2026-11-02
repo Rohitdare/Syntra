@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from research_desk.core.ids import project_id as generate_project_id
@@ -46,15 +46,22 @@ class ProjectRepo:
         res = await self.session.execute(stmt)
         return res.scalar_one_or_none()
 
-    async def get_owned(self, owner_id: uuid.UUID, project_id: str) -> Project | None:
+    async def get_owned(
+        self, owner_id: uuid.UUID, project_id: str, *, include_deleting: bool = False
+    ) -> Project | None:
         """Fetch project only if owned by owner_id and not deleting."""
-        stmt = select(Project).where(
-            Project.id == project_id,
-            Project.owner_id == owner_id,
-            Project.status != "deleting",
-        )
+        stmt = select(Project).where(Project.id == project_id, Project.owner_id == owner_id)
+        if not include_deleting:
+            stmt = stmt.where(Project.status != "deleting")
         res = await self.session.execute(stmt)
         return res.scalar_one_or_none()
+
+    async def acquire_evidence_write_lock(self, project_id: str) -> None:
+        """Serialize source deletion with final Writer brief validation and writes."""
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext('evidence_write:' || :project_id))"),
+            {"project_id": project_id},
+        )
 
     async def list_for_owner(self, owner_id: uuid.UUID) -> Sequence[Project]:
         """List active projects owned by user, sorted newest first."""

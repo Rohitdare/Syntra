@@ -15,12 +15,15 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
-from research_desk.agents import analyst, collector
-from research_desk.agents.analyst import AnalystDeps
-from research_desk.agents.collector import AgentDeps, CollectorInput
+from research_desk.agents import analyst, collector, critic, writer
+from research_desk.agents.analyst import AnalystDeps, AnalystRepos
+from research_desk.agents.collector import AgentDeps as CollectorDeps
+from research_desk.agents.collector import CollectorInput, CollectorRepos
+from research_desk.agents.critic import CriticDeps, CriticRepos
+from research_desk.agents.writer import WriterDeps, WriterRepos
 from research_desk.core.config import Settings, get_settings
 from research_desk.core.errors import AppError
-from research_desk.core.schemas import AnalystInput
+from research_desk.core.schemas import AnalystInput, AskInput, CriticInput
 from research_desk.orchestrator.events import EventSink
 from research_desk.orchestrator.jobs import JobService
 from research_desk.orchestrator.runner import JobRunner, StageCallable
@@ -28,6 +31,7 @@ from research_desk.providers.embeddings import EmbeddingProvider
 from research_desk.providers.llm import CallContext, LLMProvider
 from research_desk.stores.db import DbSessionFactory
 from research_desk.stores.models import Job
+from research_desk.stores.repos.briefs import BriefRepo
 from research_desk.stores.repos.claims import ClaimRepo
 from research_desk.stores.repos.projects import ProjectRepo
 from research_desk.stores.repos.sources import SourceRepo
@@ -54,12 +58,24 @@ class Repos:
     sources: SourceRepo
     claims: ClaimRepo
     verdicts: VerdictRepo
+    briefs: BriefRepo
+
+
+@dataclass(frozen=True)
+class PipelineDeps:
+    """Complete adapter context available to the orchestrator dispatcher."""
+
+    repos: Repos
+    vectors: VectorStore
+    embeddings: EmbeddingProvider
+    llm: LLMProvider | None
+    cfg: Settings | None
 
 
 async def run_stage(
     stage: str,
     inp: Any,
-    deps: AgentDeps,
+    deps: PipelineDeps,
     emit: AgentEmit,
     ctx: CallContext,
 ) -> dict[str, Any]:
@@ -80,7 +96,17 @@ async def run_stage(
             )
 
         try:
-            output = await collector.run(collector_in, deps, emit, ctx)
+            collector_deps = CollectorDeps(
+                repos=CollectorRepos(
+                    projects=deps.repos.projects,
+                    sources=deps.repos.sources,
+                ),
+                vectors=deps.vectors,
+                embeddings=deps.embeddings,
+                llm=deps.llm,
+                cfg=deps.cfg,
+            )
+            output = await collector.run(collector_in, collector_deps, emit, ctx)
             return output.model_dump(by_alias=True)
         finally:
             if collector_in.pdf_path and os.path.exists(collector_in.pdf_path):
@@ -126,7 +152,10 @@ async def run_stage(
             raise AppError("INTERNAL", "LLMProvider is required for analyze stage")
 
         analyst_deps = AnalystDeps(
-            repos=deps.repos,
+            repos=AnalystRepos(
+                sources=deps.repos.sources,
+                claims=deps.repos.claims,
+            ),
             vectors=deps.vectors,
             embeddings=deps.embeddings,
             llm=deps.llm,
@@ -150,10 +179,21 @@ async def run_stage(
                 "BAD_REQUEST",
                 "project_id and source_id are required for critique stage",
             )
-        source = await deps.repos.sources.get(project_id, source_id)
-        if not source or not source.stage_analyzed:
-            raise AppError("BAD_REQUEST", f"Source '{source_id}' must be analyzed before critique")
-        raise AppError("NOT_IMPLEMENTED", "Stage 'critique' will be implemented in Stage 5")
+        critic_input = CriticInput(project_id=project_id, source_id=source_id)
+        if not deps.llm:
+            raise AppError("INTERNAL", "LLMProvider is required for critique stage")
+        critic_deps = CriticDeps(
+            repos=CriticRepos(
+                sources=deps.repos.sources,
+                claims=deps.repos.claims,
+                verdicts=deps.repos.verdicts,
+            ),
+            vectors=deps.vectors,
+            llm=deps.llm,
+            cfg=deps.cfg,
+        )
+        critic_output = await critic.run(critic_input, critic_deps, emit, ctx)
+        return critic_output.model_dump(by_alias=True)
 
     elif stage == "ask":
         project_id = (
@@ -163,7 +203,29 @@ async def run_stage(
         )
         if not project_id:
             raise AppError("BAD_REQUEST", "project_id is required for ask stage")
-        raise AppError("NOT_IMPLEMENTED", "Stage 'ask' will be implemented in Stage 6")
+        if isinstance(inp, AskInput):
+            ask_input = inp
+        elif isinstance(inp, dict):
+            ask_input = AskInput.model_validate({**inp, "project_id": project_id})
+        else:
+            raise AppError("BAD_REQUEST", "Invalid input for ask stage")
+        if not deps.llm:
+            raise AppError("INTERNAL", "LLMProvider is required for ask stage")
+        writer_deps = WriterDeps(
+            repos=WriterRepos(
+                projects=deps.repos.projects,
+                sources=deps.repos.sources,
+                claims=deps.repos.claims,
+                verdicts=deps.repos.verdicts,
+                briefs=deps.repos.briefs,
+            ),
+            vectors=deps.vectors,
+            embeddings=deps.embeddings,
+            llm=deps.llm,
+            cfg=deps.cfg,
+        )
+        writer_result = await writer.run(ask_input, writer_deps, emit, ctx)
+        return writer_result.model_dump(by_alias=True)
 
     else:
         raise AppError("BAD_REQUEST", f"Unknown pipeline stage '{stage}'")
@@ -188,8 +250,9 @@ def create_stage_callable(
                 sources=SourceRepo(session),
                 claims=ClaimRepo(session),
                 verdicts=VerdictRepo(session),
+                briefs=BriefRepo(session),
             )
-            deps = AgentDeps(
+            deps = PipelineDeps(
                 repos=repos,
                 vectors=vectors,
                 embeddings=embeddings,

@@ -24,6 +24,9 @@ import {
   JobStatusResponse,
   StreamEventSchema,
   StreamEvent,
+  BriefResponseSchema,
+  BriefResponse,
+  BriefSummary,
 } from "./schemas";
 
 export type {
@@ -37,6 +40,8 @@ export type {
   AnalystResult,
   JobStatusResponse,
   StreamEvent,
+  BriefResponse,
+  BriefSummary,
 };
 export { ClaimItemSchema, AnalystResultSchema };
 
@@ -181,6 +186,23 @@ export async function getProject(
 
   const parsed = await handleResponse(res, (data) => ProjectDetailResponseSchema.parse(data));
   return parsed;
+}
+
+export async function getBrief(
+  projectId: string,
+  briefId: string,
+  baseUrl?: string,
+  signal?: AbortSignal
+): Promise<BriefResponse> {
+  const url = resolveUrl(
+    `/api/projects/${encodeURIComponent(projectId)}/briefs/${encodeURIComponent(briefId)}`,
+    baseUrl
+  );
+  const res = await fetch(url, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  return handleResponse(res, (data) => BriefResponseSchema.parse(data));
 }
 
 export async function deleteProject(
@@ -445,6 +467,37 @@ export async function analyzeSourceStream({
   }
 
   await parseNdjsonStream(res.body, onEvent || (() => {}), signal);
+}
+
+export async function critiqueSourceStream({
+  projectId, sourceId, onEvent, onJobId, idempotencyKey, baseUrl, signal,
+}: AnalyzeSourceStreamOptions): Promise<void> {
+  const url = resolveUrl(`/api/projects/${projectId}/sources/${sourceId}/critique`, baseUrl);
+  const headers: Record<string, string> = { Accept: "application/x-ndjson" };
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
+  const res = await fetch(url, { method: "POST", headers, signal });
+  const jobId = res.headers.get("X-Job-Id");
+  if (jobId) onJobId?.(jobId);
+  if (!res.ok) throw await extractApiError(res, `Critique failed with HTTP ${res.status}`);
+  if (!res.body) throw new ApiClientError({ code: "STREAM_EMPTY", message: "Server did not return a readable response stream", status: res.status });
+  await parseNdjsonStream(res.body, onEvent || (() => {}), signal);
+}
+
+export async function askProjectStream({
+  projectId, question, onEvent, onJobId, idempotencyKey, baseUrl, signal,
+}: {
+  projectId: string; question: string; onEvent: (event: StreamEvent) => void;
+  onJobId?: (jobId: string) => void; idempotencyKey?: string; baseUrl?: string; signal?: AbortSignal;
+}): Promise<void> {
+  const url = resolveUrl(`/api/projects/${projectId}/ask`, baseUrl);
+  const headers: Record<string, string> = { Accept: "application/x-ndjson", "Content-Type": "application/json" };
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
+  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ question }), signal });
+  const jobId = res.headers.get("X-Job-Id");
+  if (jobId) onJobId?.(jobId);
+  if (!res.ok) throw await extractApiError(res, `Research brief failed with HTTP ${res.status}`);
+  if (!res.body) throw new ApiClientError({ code: "STREAM_EMPTY", message: "Server did not return a readable response stream", status: res.status });
+  await parseNdjsonStream(res.body, onEvent, signal);
 }
 
 export async function streamJobEvents({

@@ -50,7 +50,7 @@ export default function RootLayout({
       </head>
       <body
         suppressHydrationWarning
-        className="font-sans antialiased selection:bg-[#EDE9FF] selection:text-[#6B5BFF] dark:selection:bg-[#2A2650] dark:selection:text-[#7C6CFF]"
+        className="font-sans antialiased selection:bg-[#EFF6FF] selection:text-[#2563EB] dark:selection:bg-[#1E293B] dark:selection:text-[#60A5FA]"
       >
         {children}
       </body>

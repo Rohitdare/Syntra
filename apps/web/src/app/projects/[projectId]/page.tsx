@@ -10,7 +10,9 @@ import {
   deleteSource,
   ingestSourceStream,
   analyzeSourceStream,
+  critiqueSourceStream,
   streamJobEvents,
+  getJobStatus,
   IngestSourceInput,
   ProjectDetailResponse,
   ApiClientError,
@@ -20,8 +22,10 @@ import { SourceList } from "@/components/sources/SourceList";
 import { AddSourceModal } from "@/components/sources/AddSourceModal";
 import { SourceDrawer } from "@/components/sources/SourceDrawer";
 import { InsightsView } from "@/components/insights/InsightsView";
-import { StreamTray, StreamConnectionStatus } from "@/components/streaming/StreamTray";
+import { ResearchAsk } from "@/components/ask/ResearchAsk";
+import { StreamTray, StreamConnectionStatus, ExecutionAttempt } from "@/components/streaming/StreamTray";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { PlusIcon, TrashIcon, ArrowLeftIcon } from "@/components/ui/Icons";
 
 interface ProjectPageProps {
   params: Promise<{ projectId: string }>;
@@ -61,17 +65,83 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
   const [streamSourceTitle, setStreamSourceTitle] = useState("");
   const [streamStageName, setStreamStageName] = useState<string>("Collector");
   const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([]);
+  const [executionHistory, setExecutionHistory] = useState<ExecutionAttempt[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<StreamConnectionStatus>("connecting");
   const [streamError, setStreamError] = useState<string | null>(null);
   const [analyzingSourceId, setAnalyzingSourceId] = useState<string | null>(null);
   const activeJobIdRef = useRef<string | null>(null);
+  const activeJobStageRef = useRef<string | null>(null);
+  const activeJobSourceIdRef = useRef<string | null>(null);
+  const resumedPipelineStagesRef = useRef<Set<string>>(new Set());
   const lastSeqRef = useRef<number>(0);
   const activeInputRef = useRef<IngestSourceInput | null>(null);
   const failedSourceIdRef = useRef<string | null>(null);
   const terminalReachedRef = useRef<boolean>(false);
+  const currentEventsRef = useRef<StreamEvent[]>([]);
 
-  // Attempt reconnection with exponential backoff up to 3 times
-  async function attemptReconnection(jobId: string, attemptsLeft = 3) {
+  function archiveActiveExecution(statusOverride?: StreamConnectionStatus) {
+    if (currentEventsRef.current.length === 0 && !activeJobIdRef.current) return;
+    const finalStatus: StreamConnectionStatus =
+      statusOverride ||
+      (terminalReachedRef.current
+        ? connectionStatus
+        : connectionStatus === "succeeded" || connectionStatus === "failed"
+          ? connectionStatus
+          : "interrupted");
+
+    const attempt: ExecutionAttempt = {
+      jobId: activeJobIdRef.current || `job-${Date.now()}`,
+      stageName: streamStageName,
+      status: finalStatus,
+      events: [...currentEventsRef.current],
+      errorMessage: streamError,
+      startedAt: currentEventsRef.current[0]?.ts || new Date().toISOString(),
+    };
+
+    setExecutionHistory((prev) => {
+      const idx = prev.findIndex((a) => a.jobId === attempt.jobId);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = attempt;
+        return next;
+      }
+      return [...prev, attempt];
+    });
+  }
+
+  async function continueRecoveredStage(jobId: string, stage: string, sourceId: string | null) {
+    try {
+      const job = await getJobStatus(jobId);
+      if (job.status !== "succeeded") {
+        await loadProject();
+        return;
+      }
+      if (stage === "collect") {
+        const recoveredSourceId = job.result?.sourceId;
+        if (typeof recoveredSourceId === "string") {
+          const title = typeof job.result?.title === "string" ? job.result.title : "Recovered source";
+          await handleTriggerAnalyze(recoveredSourceId, title);
+          return;
+        }
+      } else if (stage === "analyze" && sourceId) {
+        await handleTriggerCritique(sourceId);
+        return;
+      } else if (stage === "ask") {
+        setActiveTab("ask");
+      }
+      await loadProject();
+    } catch {
+      await loadProject();
+    }
+  }
+
+  // Reattach to persisted events; once a detached stage completes, continue its chain.
+  async function attemptReconnection(
+    jobId: string,
+    attemptsLeft = 3,
+    stage = activeJobStageRef.current || "",
+    sourceId = activeJobSourceIdRef.current
+  ) {
     if (terminalReachedRef.current) return;
     setConnectionStatus("reconnecting");
     const delay = (4 - attemptsLeft) * 1000;
@@ -86,44 +156,51 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
         onEvent: (event) => {
           if (event.type === "heartbeat") return;
           if (terminalReachedRef.current) return;
+          if (event.jobId && activeJobIdRef.current && event.jobId !== activeJobIdRef.current) return;
 
           setConnectionStatus("live");
           lastSeqRef.current = Math.max(lastSeqRef.current, event.seq);
-          setStreamEvents((prev) => {
-            if (prev.some((e) => e.seq === event.seq && e.type === event.type)) {
-              return prev;
-            }
-            return [...prev, event];
-          });
+          if (currentEventsRef.current.some((e) => e.seq === event.seq)) {
+            return;
+          }
+          currentEventsRef.current = [...currentEventsRef.current, event];
+          setStreamEvents(currentEventsRef.current);
 
           if (event.type === "stage_end") {
             terminalReachedRef.current = true;
             const isSuccess = event.data?.status === "succeeded";
             setConnectionStatus(isSuccess ? "succeeded" : "failed");
             if (isSuccess) {
-              getProject(projectId).then(setDetail).catch(() => { });
+              failedSourceIdRef.current = null;
+              void continueRecoveredStage(jobId, stage, sourceId);
             } else {
-              setStreamError("Ingestion pipeline finished with failed status.");
+              setStreamError(event.message || "Stage reported an error.");
+              void loadProject();
             }
           } else if (event.type === "error") {
-            setStreamError(event.message || "Collector stage reported an error.");
+            setStreamError(event.message || "Stage reported an error.");
           }
         },
       });
     } catch {
       if (terminalReachedRef.current) return;
       if (attemptsLeft > 1) {
-        attemptReconnection(jobId, attemptsLeft - 1);
+        attemptReconnection(jobId, attemptsLeft - 1, stage, sourceId);
       } else {
-        terminalReachedRef.current = true;
         setConnectionStatus("failed");
-        setStreamError("Connection lost and could not be recovered. Click Retry to re-run ingestion.");
+        setStreamError("Connection lost and could not be recovered. Retry the unfinished stage.");
       }
     }
   }
 
   const attemptReconnectionRef = useRef(attemptReconnection);
-  attemptReconnectionRef.current = attemptReconnection;
+  const handleTriggerAnalyzeRef = useRef(handleTriggerAnalyze);
+  const handleTriggerCritiqueRef = useRef(handleTriggerCritique);
+  useEffect(() => {
+    attemptReconnectionRef.current = attemptReconnection;
+    handleTriggerAnalyzeRef.current = handleTriggerAnalyze;
+    handleTriggerCritiqueRef.current = handleTriggerCritique;
+  });
 
   // Load project details
   const loadProject = useCallback(async () => {
@@ -133,7 +210,7 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
     } catch (err: unknown) {
       if (err instanceof ApiClientError) {
         if (err.status === 404) {
-          setError("Research project not found or you do not have permission to access it.");
+          setError("Research workspace not found or you do not have permission to access it.");
         } else {
           setError(`${err.code}: ${err.message}`);
         }
@@ -162,12 +239,51 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
             );
             if (runningJob) {
               activeJobIdRef.current = runningJob.jobId;
-              lastSeqRef.current = runningJob.lastSeq || 0;
+              activeJobStageRef.current = runningJob.stage;
+              activeJobSourceIdRef.current = runningJob.sourceId || null;
+              lastSeqRef.current = 0;
               terminalReachedRef.current = false;
-              setStreamSourceTitle("Active Pipeline Ingestion");
+              currentEventsRef.current = [];
+              setStreamEvents([]);
+              const stageNames: Record<string, string> = {
+                collect: "Collector", analyze: "Analyst", critique: "Critic", ask: "Writer",
+              };
+              setStreamStageName(stageNames[runningJob.stage] || "Research stage");
+              setStreamSourceTitle(runningJob.sourceId
+                ? data.sources.find((source) => source.id === runningJob.sourceId)?.title || "Research source"
+                : runningJob.stage === "ask" ? "Research brief" : "New source");
+              if (runningJob.stage === "ask") setActiveTab("ask");
               setIsStreamTrayOpen(true);
               setConnectionStatus("reconnecting");
-              attemptReconnectionRef.current(runningJob.jobId);
+              failedSourceIdRef.current = runningJob.sourceId || null;
+              attemptReconnectionRef.current(
+                runningJob.jobId, 3, runningJob.stage, runningJob.sourceId || null
+              );
+            }
+          }
+          const hasActiveSourceStage = data.activeJobs.some((job) => job.stage !== "ask");
+          if (!hasActiveSourceStage) {
+            const pendingAnalysis = data.sources.find(
+              (source) => source.stages.collected && !source.stages.analyzed && !source.lastError
+            );
+            const pendingCritique = data.sources.find(
+              (source) => source.stages.analyzed && !source.stages.critiqued && !source.lastError
+            );
+            const pending = pendingAnalysis
+              ? { source: pendingAnalysis, stage: "analyze" }
+              : pendingCritique ? { source: pendingCritique, stage: "critique" } : null;
+            if (pending) {
+              const key = `${pending.stage}:${pending.source.id}`;
+              if (!resumedPipelineStagesRef.current.has(key)) {
+                resumedPipelineStagesRef.current.add(key);
+                window.setTimeout(() => {
+                  if (pending.stage === "analyze") {
+                    void handleTriggerAnalyzeRef.current(pending.source.id, pending.source.title);
+                  } else {
+                    void handleTriggerCritiqueRef.current(pending.source.id, pending.source.title);
+                  }
+                }, 0);
+              }
             }
           }
         }
@@ -176,7 +292,7 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
         if (!cancelled) {
           if (err instanceof ApiClientError) {
             if (err.status === 404) {
-              setError("Research project not found or you do not have permission to access it.");
+              setError("Research workspace not found or you do not have permission to access it.");
             } else {
               setError(`${err.code}: ${err.message}`);
             }
@@ -196,14 +312,20 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
 
   // Handle source ingestion submission with automatic Collector -> Analyst chaining
   async function handleAddSource(input: IngestSourceInput) {
+    archiveActiveExecution();
     setIsSubmittingSource(true);
     activeInputRef.current = input;
-    const title = input.title || input.file?.name || input.url || "New Evidence Source";
+    const title = input.title || input.file?.name || input.url || "New Reference";
     setStreamSourceTitle(title);
     setStreamStageName("Collector");
     terminalReachedRef.current = false;
     lastSeqRef.current = 0;
     failedSourceIdRef.current = null;
+    currentEventsRef.current = [];
+    setStreamEvents([]);
+    setExecutionHistory([]);
+    setConnectionStatus("connecting");
+    setStreamError(null);
 
     const idempotencyKey = generateIdempotencyKey();
     let collectedSourceId: string | null = null;
@@ -216,82 +338,95 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
         idempotencyKey,
         onJobId: (jobId) => {
           activeJobIdRef.current = jobId;
-          // Close modal and reveal live stream tray upon verified stream start
+          activeJobStageRef.current = "collect";
+          activeJobSourceIdRef.current = null;
           setIsAddModalOpen(false);
           setIsStreamTrayOpen(true);
+          currentEventsRef.current = [];
           setStreamEvents([]);
           setConnectionStatus("live");
           setStreamError(null);
         },
         onEvent: (event) => {
-          if (event.type === "heartbeat") {
-            return; // Heartbeat does not alter UI event sequence
-          }
-
-          if (terminalReachedRef.current) {
-            return; // Terminal state is locked
-          }
+          if (event.type === "heartbeat") return;
+          if (terminalReachedRef.current) return;
+          if (event.jobId && activeJobIdRef.current && event.jobId !== activeJobIdRef.current) return;
 
           setConnectionStatus("live");
           lastSeqRef.current = Math.max(lastSeqRef.current, event.seq);
-          setStreamEvents((prev) => {
-            // Deduplicate by sequence and event type
-            if (prev.some((e) => e.seq === event.seq && e.type === event.type)) {
-              return prev;
-            }
-            return [...prev, event];
-          });
+          if (currentEventsRef.current.some((e) => e.seq === event.seq)) {
+            return;
+          }
+          currentEventsRef.current = [...currentEventsRef.current, event];
+          setStreamEvents(currentEventsRef.current);
 
-          if (event.type === "result" && event.data?.sourceId) {
-            collectedSourceId = String(event.data.sourceId);
+          if (event.type === "doc_write" && event.data && typeof event.data === "object") {
+            const dataObj = event.data as Record<string, unknown>;
+            if (typeof dataObj.sourceId === "string") {
+              collectedSourceId = dataObj.sourceId;
+            }
+          }
+
+          if (event.type === "result" && event.data && typeof event.data === "object") {
+            const resObj = event.data as Record<string, unknown>;
+            if (typeof resObj.sourceId === "string") {
+              collectedSourceId = resObj.sourceId;
+            }
           }
 
           if (event.type === "stage_end") {
+            terminalReachedRef.current = true;
             const isSuccess = event.data?.status === "succeeded";
             if (isSuccess) {
               collectorSucceeded = true;
+              setConnectionStatus("succeeded");
             } else {
-              terminalReachedRef.current = true;
               setConnectionStatus("failed");
-              setStreamError("Ingestion stage finished with failed status.");
-              loadProject();
+              setStreamError("Reference collection finished with a failed status.");
             }
-            // If isSuccess, do NOT set terminalReachedRef yet; we will chain into Analyst below!
+            loadProject();
           } else if (event.type === "error") {
-            setStreamError(event.message || "Collector stage reported an error.");
+            setStreamError(event.message || "Reference collection reported an issue.");
           }
         },
       });
 
-      // If Collector explicitly confirmed success and produced a sourceId, auto-chain to Analyst!
+      // Automatic chaining: Collector -> Analyst -> Critic.
       if (collectorSucceeded && collectedSourceId) {
-        await loadProject();
+        archiveActiveExecution("succeeded");
+        currentEventsRef.current = [];
+        setStreamEvents([]);
         setStreamStageName("Analyst");
+        failedSourceIdRef.current = collectedSourceId;
+        terminalReachedRef.current = false;
+        lastSeqRef.current = 0;
         setConnectionStatus("live");
         setStreamError(null);
-        failedSourceIdRef.current = collectedSourceId;
 
-        const analyzeIdempotencyKey = generateIdempotencyKey();
+        const analyzeIdempKey = generateIdempotencyKey();
+        let analysisSucceeded = false;
         try {
           await analyzeSourceStream({
             projectId,
             sourceId: collectedSourceId,
-            idempotencyKey: analyzeIdempotencyKey,
-            onJobId: (analyzeJobId) => {
-              activeJobIdRef.current = analyzeJobId;
+            idempotencyKey: analyzeIdempKey,
+            onJobId: (jobId) => {
+              activeJobIdRef.current = jobId;
+              activeJobStageRef.current = "analyze";
+              activeJobSourceIdRef.current = collectedSourceId;
             },
             onEvent: (event) => {
               if (event.type === "heartbeat") return;
               if (terminalReachedRef.current) return;
+              if (event.jobId && activeJobIdRef.current && event.jobId !== activeJobIdRef.current) return;
 
               setConnectionStatus("live");
               lastSeqRef.current = Math.max(lastSeqRef.current, event.seq);
-              setStreamEvents((prev) => {
-                if (prev.some((e) => e.seq === event.seq && e.type === event.type)) {
-                  return prev;
-                }
-                return [...prev, event];
-              });
+              if (currentEventsRef.current.some((e) => e.seq === event.seq)) {
+                return;
+              }
+              currentEventsRef.current = [...currentEventsRef.current, event];
+              setStreamEvents(currentEventsRef.current);
 
               if (event.type === "stage_end") {
                 terminalReachedRef.current = true;
@@ -299,12 +434,13 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
                 setConnectionStatus(isSuccess ? "succeeded" : "failed");
                 if (isSuccess) {
                   failedSourceIdRef.current = null;
+                  analysisSucceeded = true;
                 } else {
-                  setStreamError("Analyst stage finished with failed status.");
+                  setStreamError("Evidence analysis finished with a failed status.");
                 }
                 loadProject();
               } else if (event.type === "error") {
-                setStreamError(event.message || "Analyst stage reported an error.");
+                setStreamError(event.message || "Evidence analysis reported an issue.");
               }
             },
           });
@@ -316,20 +452,21 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
               ? `${analyzeErr.code}: ${analyzeErr.message}`
               : analyzeErr instanceof Error
                 ? analyzeErr.message
-                : "Failed to run source analysis.";
+                : "Failed to run evidence analysis.";
           setStreamError(msg);
           loadProject();
         }
+        if (analysisSucceeded) {
+          archiveActiveExecution("succeeded");
+          await handleTriggerCritique(collectedSourceId, title);
+        }
       }
     } catch (err: unknown) {
-      if (terminalReachedRef.current) {
-        return;
-      }
+      if (terminalReachedRef.current) return;
 
       if (activeJobIdRef.current) {
         attemptReconnection(activeJobIdRef.current);
       } else {
-        // Failed before stream started: re-throw so AddSourceModal stays open and presents error
         throw err;
       }
     } finally {
@@ -341,11 +478,13 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
   async function handleTriggerAnalyze(sourceId: string, title?: string) {
     if (analyzingSourceId || isSubmittingSource) return;
 
+    archiveActiveExecution();
     setAnalyzingSourceId(sourceId);
     failedSourceIdRef.current = sourceId;
-    setStreamSourceTitle(title || "Source Analysis");
+    setStreamSourceTitle(title || "Evidence Analysis");
     setStreamStageName("Analyst");
     setIsStreamTrayOpen(true);
+    currentEventsRef.current = [];
     setStreamEvents([]);
     setConnectionStatus("live");
     setStreamError(null);
@@ -353,6 +492,7 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
     lastSeqRef.current = 0;
 
     const idempotencyKey = generateIdempotencyKey();
+    let analysisSucceeded = false;
 
     try {
       await analyzeSourceStream({
@@ -361,19 +501,21 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
         idempotencyKey,
         onJobId: (jobId) => {
           activeJobIdRef.current = jobId;
+          activeJobStageRef.current = "analyze";
+          activeJobSourceIdRef.current = sourceId;
         },
         onEvent: (event) => {
           if (event.type === "heartbeat") return;
           if (terminalReachedRef.current) return;
+          if (event.jobId && activeJobIdRef.current && event.jobId !== activeJobIdRef.current) return;
 
           setConnectionStatus("live");
           lastSeqRef.current = Math.max(lastSeqRef.current, event.seq);
-          setStreamEvents((prev) => {
-            if (prev.some((e) => e.seq === event.seq && e.type === event.type)) {
-              return prev;
-            }
-            return [...prev, event];
-          });
+          if (currentEventsRef.current.some((e) => e.seq === event.seq)) {
+            return;
+          }
+          currentEventsRef.current = [...currentEventsRef.current, event];
+          setStreamEvents(currentEventsRef.current);
 
           if (event.type === "stage_end") {
             terminalReachedRef.current = true;
@@ -381,12 +523,13 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
             setConnectionStatus(isSuccess ? "succeeded" : "failed");
             if (isSuccess) {
               failedSourceIdRef.current = null;
+              analysisSucceeded = true;
             } else {
-              setStreamError("Analyst stage finished with failed status.");
+              setStreamError("Evidence analysis finished with a failed status.");
             }
             loadProject();
           } else if (event.type === "error") {
-            setStreamError(event.message || "Analyst stage reported an error.");
+            setStreamError(event.message || "Evidence analysis reported an issue.");
           }
         },
       });
@@ -399,8 +542,75 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
           ? `${err.code}: ${err.message}`
           : err instanceof Error
             ? err.message
-            : "Failed to run source analysis.";
+            : "Failed to run evidence analysis.";
       setStreamError(msg);
+      loadProject();
+    } finally {
+      setAnalyzingSourceId(null);
+    }
+    if (analysisSucceeded) {
+      archiveActiveExecution("succeeded");
+      await handleTriggerCritique(sourceId, title);
+    }
+  }
+
+  async function handleTriggerCritique(sourceId: string, title?: string) {
+    archiveActiveExecution();
+    setAnalyzingSourceId(sourceId);
+    failedSourceIdRef.current = sourceId;
+    setStreamSourceTitle(title || "Cross-source critique");
+    setStreamStageName("Critic");
+    setIsStreamTrayOpen(true);
+    currentEventsRef.current = [];
+    setStreamEvents([]);
+    setConnectionStatus("live");
+    setStreamError(null);
+    terminalReachedRef.current = false;
+    lastSeqRef.current = 0;
+
+    try {
+      await critiqueSourceStream({
+        projectId,
+        sourceId,
+        idempotencyKey: generateIdempotencyKey(),
+        onJobId: (jobId) => {
+          activeJobIdRef.current = jobId;
+          activeJobStageRef.current = "critique";
+          activeJobSourceIdRef.current = sourceId;
+        },
+        onEvent: (event) => {
+          if (event.type === "heartbeat") return;
+          if (terminalReachedRef.current) return;
+          if (event.jobId && activeJobIdRef.current && event.jobId !== activeJobIdRef.current) return;
+
+          setConnectionStatus("live");
+          lastSeqRef.current = Math.max(lastSeqRef.current, event.seq);
+          if (currentEventsRef.current.some((e) => e.seq === event.seq)) {
+            return;
+          }
+          currentEventsRef.current = [...currentEventsRef.current, event];
+          setStreamEvents(currentEventsRef.current);
+
+          if (event.type === "stage_end") {
+            terminalReachedRef.current = true;
+            const succeeded = event.data?.status === "succeeded";
+            setConnectionStatus(succeeded ? "succeeded" : "failed");
+            if (!succeeded) {
+              setStreamError("Cross-source critique finished with a failed status.");
+            } else {
+              failedSourceIdRef.current = null;
+            }
+            loadProject();
+          } else if (event.type === "error") {
+            setStreamError(event.message || "Critique reported an issue.");
+          }
+        },
+      });
+    } catch (err: unknown) {
+      if (terminalReachedRef.current) return;
+      terminalReachedRef.current = true;
+      setConnectionStatus("failed");
+      setStreamError(err instanceof Error ? err.message : "Failed to run cross-source critique.");
       loadProject();
     } finally {
       setAnalyzingSourceId(null);
@@ -423,14 +633,14 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
     } catch (err: unknown) {
       if (err instanceof ApiClientError) {
         if (err.code === "JOB_ACTIVE" || err.status === 409) {
-          setDeleteSourceError("Cannot delete source while an ingestion or analysis stage is actively running.");
+          setDeleteSourceError("Cannot delete reference while ingestion or analysis is actively running.");
         } else {
           setDeleteSourceError(`${err.code}: ${err.message}`);
         }
       } else if (err instanceof Error) {
         setDeleteSourceError(err.message);
       } else {
-        setDeleteSourceError("Failed to delete source.");
+        setDeleteSourceError("Failed to delete reference.");
       }
     } finally {
       setIsDeletingSource(false);
@@ -448,74 +658,74 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
     } catch (err: unknown) {
       if (err instanceof ApiClientError) {
         if (err.code === "JOB_ACTIVE" || err.status === 409) {
-          setDeleteProjectError("Cannot delete project while background jobs are active. Please wait for jobs to finish.");
+          setDeleteProjectError("Cannot delete workspace while background processing is active.");
         } else {
           setDeleteProjectError(`${err.code}: ${err.message}`);
         }
       } else if (err instanceof Error) {
         setDeleteProjectError(err.message);
       } else {
-        setDeleteProjectError("Failed to delete project.");
+        setDeleteProjectError("Failed to delete workspace.");
       }
     } finally {
       setIsDeletingProject(false);
     }
   }
 
-  const projectName = detail?.project.name || projectId;
+  const projectName = detail?.project.name || "Workspace";
 
   return (
     <AppShell
       activeProjectId={projectId}
       breadcrumbs={[
-        { label: "Research Desk", href: "/" },
+        { label: "Research", href: "/" },
         { label: projectName },
       ]}
+      onOpenCreateProject={() => router.push("/")}
     >
-      <div className="space-y-6">
+      <div className="space-y-6 max-w-5xl mx-auto">
         {/* Loading Skeleton */}
         {isLoading && (
           <div className="space-y-4 animate-pulse">
-            <div className="h-8 bg-[var(--color-card)] rounded w-1/3" />
-            <div className="h-4 bg-[var(--color-card)] rounded w-1/2" />
-            <div className="h-48 bg-[var(--color-card)] rounded-xl mt-6" />
+            <div className="h-6 bg-[var(--color-surface-secondary)] rounded w-1/4" />
+            <div className="h-4 bg-[var(--color-surface-secondary)] rounded w-1/2" />
+            <div className="h-48 bg-[var(--color-surface-secondary)] rounded-2xl mt-6" />
           </div>
         )}
 
         {/* Error / Not Found State */}
         {!isLoading && error && (
-          <div className="p-6 rounded-xl border border-[var(--color-error)] bg-[var(--color-error-soft)] space-y-4">
-            <div className="flex items-center space-x-2 text-[var(--color-error)] font-semibold text-sm">
-              <span>✕</span>
-              <span>Workspace Error</span>
+          <div className="p-6 rounded-2xl border border-[var(--color-error)]/30 bg-[var(--color-error-soft)] space-y-3">
+            <div className="flex items-center space-x-2 text-[var(--color-error)] font-semibold text-xs">
+              <span>Workspace Notice</span>
             </div>
             <p className="text-xs text-[var(--color-text-secondary)]">{error}</p>
             <Link
               href="/"
-              className="inline-block px-3 py-1.5 text-xs font-medium bg-[var(--color-card)] border border-[var(--color-border)] rounded-md hover:bg-[var(--color-surface)] transition-colors"
+              className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg hover:bg-[var(--color-surface-secondary)] transition-colors"
             >
-              Return to Research Desk
+              <ArrowLeftIcon className="w-3.5 h-3.5" />
+              <span>Return to Research Desk</span>
             </Link>
           </div>
         )}
 
-        {/* Project Header */}
+        {/* Dedicated Research Document Header */}
         {!isLoading && detail && (
           <>
-            <div className="border-b border-[var(--color-border)] pb-6 space-y-4">
+            <div className="border-b border-[var(--color-border)] pb-6 space-y-5">
               <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-                <div className="space-y-1 max-w-2xl">
-                  <div className="flex items-center space-x-2">
-                    <h1 className="text-2xl font-bold tracking-tight text-[var(--color-text-primary)]">
-                      {detail.project.name}
-                    </h1>
-                    <span className="font-mono text-[10px] text-[var(--color-text-muted)] bg-[var(--color-surface)] px-1.5 py-0.5 rounded border border-[var(--color-border)]">
-                      {detail.project.id}
-                    </span>
-                  </div>
-                  {detail.project.description && (
-                    <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
+                <div className="space-y-1.5 max-w-2xl min-w-0">
+                  <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-[var(--color-text-primary)]">
+                    {detail.project.name}
+                  </h1>
+                  {detail.project.description ? (
+                    <p className="text-xs sm:text-sm text-[var(--color-text-secondary)] leading-relaxed">
                       {detail.project.description}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-[var(--color-text-muted)] italic">
+                      Dedicated research workspace for source collection and evidence synthesis.
                     </p>
                   )}
                 </div>
@@ -524,10 +734,10 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
                   <button
                     type="button"
                     onClick={() => setIsAddModalOpen(true)}
-                    className="px-3.5 py-2 text-xs font-semibold bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white rounded-lg shadow-xs transition-colors flex items-center space-x-1.5 cursor-pointer"
+                    className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-medium bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white rounded-lg shadow-xs transition-colors cursor-pointer"
                   >
-                    <span className="font-bold leading-none">+</span>
-                    <span>Add Source</span>
+                    <PlusIcon className="w-3.5 h-3.5" />
+                    <span>Add Reference</span>
                   </button>
                   <button
                     type="button"
@@ -535,57 +745,60 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
                       setDeleteProjectError(null);
                       setIsDeleteProjectOpen(true);
                     }}
-                    aria-label="Delete project"
-                    className="px-3 py-2 text-xs font-medium text-[var(--color-text-muted)] hover:text-[var(--color-error)] hover:bg-[var(--color-error-soft)] rounded-lg border border-[var(--color-border)] hover:border-[var(--color-error)] transition-colors cursor-pointer"
-                    title="Delete Project"
+                    aria-label="Delete workspace"
+                    title="Delete workspace"
+                    className="p-1.5 text-[var(--color-text-muted)] hover:text-[var(--color-error)] hover:bg-[var(--color-error-soft)] rounded-lg border border-[var(--color-border)] hover:border-[var(--color-error)]/30 transition-colors cursor-pointer"
                   >
-                    Delete Project
+                    <TrashIcon className="w-3.5 h-3.5" />
                   </button>
                 </div>
               </div>
 
-              {/* Segmented Workspace Tabs */}
-              <div className="flex items-center space-x-1 pt-2" role="tablist">
+              {/* Minimal Workspace Tabs */}
+              <div className="flex items-center space-x-2 pt-2 text-xs" role="tablist">
                 <button
                   type="button"
                   role="tab"
                   aria-selected={activeTab === "sources"}
                   onClick={() => setActiveTab("sources")}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${activeTab === "sources"
-                      ? "bg-[var(--color-card)] text-[var(--color-primary)] font-semibold border border-[var(--color-border)] shadow-xs"
-                      : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-                    }`}
+                  className={`px-3 py-1.5 font-medium rounded-lg transition-colors cursor-pointer ${
+                    activeTab === "sources"
+                      ? "bg-[var(--color-surface)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)] shadow-xs"
+                      : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-secondary)]/50"
+                  }`}
                 >
-                  Sources ({detail.sources.length})
+                  References ({detail.sources.length})
                 </button>
                 <button
                   type="button"
                   role="tab"
                   aria-selected={activeTab === "insights"}
                   onClick={() => setActiveTab("insights")}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${activeTab === "insights"
-                      ? "bg-[var(--color-card)] text-[var(--color-primary)] font-semibold border border-[var(--color-border)] shadow-xs"
-                      : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-                    }`}
+                  className={`px-3 py-1.5 font-medium rounded-lg transition-colors cursor-pointer ${
+                    activeTab === "insights"
+                      ? "bg-[var(--color-surface)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)] shadow-xs"
+                      : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-secondary)]/50"
+                  }`}
                 >
-                  Insights & Conflicts
+                  Insights & Findings
                 </button>
                 <button
                   type="button"
                   role="tab"
                   aria-selected={activeTab === "ask"}
                   onClick={() => setActiveTab("ask")}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${activeTab === "ask"
-                      ? "bg-[var(--color-card)] text-[var(--color-primary)] font-semibold border border-[var(--color-border)] shadow-xs"
-                      : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-                    }`}
+                  className={`px-3 py-1.5 font-medium rounded-lg transition-colors cursor-pointer ${
+                    activeTab === "ask"
+                      ? "bg-[var(--color-surface)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)] shadow-xs"
+                      : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-secondary)]/50"
+                  }`}
                 >
-                  Ask & Briefing
+                  Research Briefing
                 </button>
               </div>
             </div>
 
-            {/* TAB 1: Sources */}
+            {/* TAB 1: Sources / References */}
             {activeTab === "sources" && (
               <SourceList
                 sources={detail.sources}
@@ -600,36 +813,27 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
               />
             )}
 
-            {/* TAB 2: Insights */}
+            {/* TAB 2: Insights & Findings */}
             {activeTab === "insights" && (
               <InsightsView
                 projectId={projectId}
                 sources={detail.sources}
                 onInspectSource={(sourceId) => setInspectedSourceId(sourceId)}
                 onTriggerAnalyze={handleTriggerAnalyze}
+                onTriggerCritique={handleTriggerCritique}
                 onOpenAddModal={() => setIsAddModalOpen(true)}
                 analyzingSourceId={analyzingSourceId}
               />
             )}
 
-            {/* TAB 3: Ask Preview */}
+            {/* TAB 3: Research Briefing (Ask) */}
             {activeTab === "ask" && (
-              <div className="p-10 border border-dashed border-[var(--color-border)] rounded-2xl bg-[var(--color-surface)]/60 text-center space-y-3 max-w-xl mx-auto my-6 animate-in fade-in duration-150">
-                <div className="w-12 h-12 mx-auto rounded-full bg-[var(--color-card)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-agent-writer)] shadow-xs">
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                  </svg>
-                </div>
-                <div className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-[var(--color-card)] border border-[var(--color-border)] text-[var(--color-text-muted)] uppercase tracking-wider">
-                  Upcoming: Stage 6 (Writer)
-                </div>
-                <h2 className="text-sm font-bold text-[var(--color-text-primary)]">
-                  Grounded Research Briefings
-                </h2>
-                <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed max-w-md mx-auto">
-                  Ask targeted research questions across your evidence memory. The Writer agent will construct comprehensive briefings with validated [S#] citations, noted gaps, and consensus summaries.
-                </p>
-              </div>
+              <ResearchAsk
+                projectId={projectId}
+                briefs={detail.briefs}
+                onOpenSource={setInspectedSourceId}
+                onBriefSaved={() => void loadProject()}
+              />
             )}
           </>
         )}
@@ -662,12 +866,16 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
           stageName={streamStageName}
           sourceTitle={streamSourceTitle}
           events={streamEvents}
+          currentJobId={activeJobIdRef.current || undefined}
+          historyAttempts={executionHistory}
           connectionStatus={connectionStatus}
           errorMessage={streamError}
           onClose={() => setIsStreamTrayOpen(false)}
           onRetry={() => {
             if (streamStageName === "Analyst" && failedSourceIdRef.current) {
               handleTriggerAnalyze(failedSourceIdRef.current, streamSourceTitle);
+            } else if (streamStageName === "Critic" && failedSourceIdRef.current) {
+              handleTriggerCritique(failedSourceIdRef.current, streamSourceTitle);
             } else if (activeInputRef.current) {
               handleAddSource(activeInputRef.current);
             }
@@ -677,9 +885,9 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
         {/* Delete Source Confirmation Dialog */}
         <ConfirmDialog
           isOpen={deleteSourceTarget !== null}
-          title="Delete Evidence Source"
+          title="Delete Reference"
           description={`Are you sure you want to delete "${deleteSourceTarget?.title}"? This will permanently remove its extracted text, vector chunk embeddings, and any derived claims from the evidence memory.`}
-          confirmLabel="Delete Source"
+          confirmLabel="Delete Reference"
           variant="danger"
           isLoading={isDeletingSource}
           errorMessage={deleteSourceError}
@@ -695,9 +903,9 @@ function ProjectWorkspaceContent({ params }: ProjectPageProps) {
         {/* Delete Project Confirmation Dialog */}
         <ConfirmDialog
           isOpen={isDeleteProjectOpen}
-          title="Delete Research Project"
-          description={`Are you sure you want to delete "${projectName}"? This action cannot be undone. All sources, vector points, claims, and briefings associated with this project will be deleted.`}
-          confirmLabel="Delete Project"
+          title="Delete Research Workspace"
+          description={`Are you sure you want to delete "${projectName}"? This action cannot be undone. All references, vector points, claims, and briefings will be permanently removed.`}
+          confirmLabel="Delete Workspace"
           variant="danger"
           isLoading={isDeletingProject}
           errorMessage={deleteProjectError}
@@ -720,7 +928,7 @@ export default function ProjectWorkspacePage({ params }: ProjectPageProps) {
       fallback={
         <div className="min-h-screen bg-[var(--color-bg)] flex items-center justify-center p-8">
           <div className="space-y-3 text-center">
-            <div className="w-6 h-6 border-2 border-[var(--color-primary)] border-t-transparent rounded-full animate-spin mx-auto" />
+            <div className="w-5 h-5 border-2 border-[var(--color-primary)] border-t-transparent rounded-full animate-spin mx-auto" />
             <p className="text-xs text-[var(--color-text-secondary)]">Loading research workspace...</p>
           </div>
         </div>

@@ -27,6 +27,8 @@
       "text": "Two-store validation with PostgreSQL as the system of record reduces claim hallucination by 42% compared to vector-only memory.",
       "importance": 5,
       "pageHint": 4,
+      "evidenceQuote": "The evaluation found a 42% reduction in unsupported claims when PostgreSQL validation was enabled.",
+      "evidenceChunkIds": ["chk_4f1b2c3d_003"],
       "createdAt": "2026-10-29T00:00:00Z"
     },
     {
@@ -36,6 +38,8 @@
       "text": "Deterministic UUIDv5 vector indexing ensures complete idempotency across repeated pipeline analysis stages.",
       "importance": 4,
       "pageHint": 7,
+      "evidenceQuote": "UUIDv5 point identifiers produced the same vector keys during all repeated analysis runs.",
+      "evidenceChunkIds": ["chk_4f1b2c3d_008"],
       "createdAt": "2026-10-29T00:00:00Z"
     }
   ],

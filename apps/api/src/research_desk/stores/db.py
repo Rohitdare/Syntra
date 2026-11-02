@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from research_desk.core.config import Settings, get_settings
+from research_desk.core.config import Settings, get_database_url, get_settings
 
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
@@ -32,11 +32,7 @@ def get_engine(settings: Settings | None = None) -> AsyncEngine:
     global _engine, _sessionmaker
     if _engine is None:
         cfg = settings or get_settings()
-        db_url = cfg.DATABASE_URL.get_secret_value()
-        if not db_url:
-            db_url = "postgresql+asyncpg://postgres:postgres@localhost:5432/research_desk"
-        elif db_url.startswith("postgresql://"):
-            db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        db_url = get_database_url(cfg)
 
         connect_args: dict[str, Any] = {}
         if db_url.startswith("sqlite"):

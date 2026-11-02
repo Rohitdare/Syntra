@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { IngestSourceInput, ApiClientError } from "@/lib/api/client";
+import { FileTextIcon, GlobeIcon, XIcon, CheckIcon } from "@/components/ui/Icons";
 
 export interface AddSourceModalProps {
   isOpen: boolean;
@@ -42,10 +43,8 @@ export function AddSourceModal({
   // General submission error
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // Trigger ref for accessible focus restoration
   const triggerElementRef = useRef<HTMLElement | null>(null);
 
-  // Save active element on open and restore on close
   useEffect(() => {
     if (isOpen) {
       triggerElementRef.current = document.activeElement as HTMLElement | null;
@@ -54,7 +53,6 @@ export function AddSourceModal({
     }
   }, [isOpen]);
 
-  // Escape key closes modal unless submitting
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape" && isOpen && !isSubmitting) {
@@ -88,9 +86,7 @@ export function AddSourceModal({
     }
 
     if (file.size > MAX_UPLOAD_BYTES) {
-      setPdfError(
-        `File size (${formatBytes(file.size)}) exceeds the maximum limit of 8 MB.`
-      );
+      setPdfError(`File size (${formatBytes(file.size)}) exceeds the limit of 8 MB.`);
       setSelectedFile(null);
       return;
     }
@@ -109,203 +105,177 @@ export function AddSourceModal({
     }
   }
 
+  function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setIsDragOver(true);
+  }
+
+  function handleDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setIsDragOver(false);
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (isSubmitting) return;
+
     setSubmitError(null);
 
-    try {
-      if (activeTab === "pdf") {
-        if (!selectedFile) {
-          setPdfError("Please select a valid PDF file under 8 MB.");
-          return;
-        }
+    if (activeTab === "pdf") {
+      if (!selectedFile) {
+        setPdfError("Please select a PDF document to upload.");
+        return;
+      }
+      try {
         await onSubmit({
           file: selectedFile,
           title: pdfTitle.trim() || undefined,
         });
-      } else if (activeTab === "url") {
-        const trimmedUrl = url.trim();
-        if (!trimmedUrl) {
-          setUrlError("Please enter a web URL.");
+      } catch (err: unknown) {
+        handleApiError(err);
+      }
+    } else if (activeTab === "url") {
+      const trimmedUrl = url.trim();
+      if (!trimmedUrl) {
+        setUrlError("Please enter a valid HTTP or HTTPS article URL.");
+        return;
+      }
+      try {
+        const parsed = new URL(trimmedUrl);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          setUrlError("Only http:// or https:// addresses are supported.");
           return;
         }
-        if (!trimmedUrl.startsWith("http://") && !trimmedUrl.startsWith("https://")) {
-          setUrlError("URL must begin with http:// or https://");
-          return;
-        }
-        try {
-          new URL(trimmedUrl);
-        } catch {
-          setUrlError("Please enter a valid, well-formed URL.");
-          return;
-        }
-        setUrlError(null);
+      } catch {
+        setUrlError("Invalid address format. Include protocol (e.g. https://).");
+        return;
+      }
+      try {
         await onSubmit({
           url: trimmedUrl,
           title: urlTitle.trim() || undefined,
         });
-      } else if (activeTab === "text") {
-        const trimmedTitle = pastedTitle.trim();
-        if (!trimmedTitle) {
-          setTextError("Title is required for pasted text (1-100 characters).");
-          return;
-        }
-        if (trimmedTitle.length > 100) {
-          setTextError("Title must not exceed 100 characters.");
-          return;
-        }
-        const textLen = pastedText.length;
-        if (textLen < MIN_TEXT_CHARS) {
-          setTextError(
-            `Text is too short (${textLen} characters). Minimum required is ${MIN_TEXT_CHARS} characters to build evidence.`
-          );
-          return;
-        }
-        if (textLen > MAX_TEXT_CHARS) {
-          setTextError(
-            `Text exceeds maximum allowed length of ${MAX_TEXT_CHARS.toLocaleString()} characters.`
-          );
-          return;
-        }
-        setTextError(null);
+      } catch (err: unknown) {
+        handleApiError(err);
+      }
+    } else if (activeTab === "text") {
+      const trimmedText = pastedText.trim();
+      if (trimmedText.length < MIN_TEXT_CHARS) {
+        setTextError(`Content is too brief (${trimmedText.length} characters). Minimum is ${MIN_TEXT_CHARS} characters.`);
+        return;
+      }
+      if (trimmedText.length > MAX_TEXT_CHARS) {
+        setTextError(`Content exceeds the maximum limit of ${MAX_TEXT_CHARS.toLocaleString()} characters.`);
+        return;
+      }
+      try {
         await onSubmit({
-          title: trimmedTitle,
-          text: pastedText,
+          text: trimmedText,
+          title: pastedTitle.trim() || undefined,
         });
+      } catch (err: unknown) {
+        handleApiError(err);
       }
-    } catch (err: unknown) {
-      if (err instanceof ApiClientError) {
-        if (err.code === "FETCH_BLOCKED") {
-          setSubmitError("URL blocked: For security, private, localhost, link-local, and internal addresses cannot be fetched.");
-        } else if (err.code === "FETCH_FAILED") {
-          setSubmitError("Failed to fetch content from this URL. Please verify the URL or paste the article text directly.");
-        } else if (err.code === "JOB_ACTIVE" || err.status === 409) {
-          setSubmitError("A research stage is already actively running. Please wait for the current job to complete.");
-        } else if (err.code === "NO_TEXT") {
-          setSubmitError("No readable text found. If this is a scanned PDF, paste extracted text instead.");
-        } else if (err.code === "PAYLOAD_TOO_LARGE") {
-          setSubmitError("File exceeds the 8 MB upload cap. Please select a smaller PDF.");
-        } else if (err.code === "UNSUPPORTED_MEDIA_TYPE") {
-          setSubmitError("Unsupported file type. Please upload a standard text-searchable PDF.");
-        } else if (err.code === "LIMIT_REACHED") {
-          setSubmitError("Project source limit reached. Maximum allowed sources have been added.");
-        } else {
-          setSubmitError(`${err.code}: ${err.message}`);
-        }
-      } else if (err instanceof Error) {
-        setSubmitError(err.message);
-      } else {
-        setSubmitError("Failed to initiate source ingestion.");
-      }
+    }
+  }
+
+  function handleApiError(err: unknown) {
+    if (err instanceof ApiClientError) {
+      setSubmitError(err.message);
+    } else if (err instanceof Error) {
+      setSubmitError(err.message);
+    } else {
+      setSubmitError("Failed to ingest source. Please verify your connection.");
     }
   }
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs transition-opacity"
       role="dialog"
       aria-modal="true"
       aria-labelledby="add-source-title"
-      onClick={() => {
-        if (!isSubmitting) onClose();
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !isSubmitting) onClose();
       }}
     >
-      <div
-        className="w-full max-w-lg bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-2xl p-6 space-y-5 animate-in fade-in zoom-in-95 duration-150"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <div className="w-full max-w-lg bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl shadow-xl overflow-hidden text-[var(--color-text-primary)]">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-[var(--color-border)] pb-4">
-          <div className="space-y-0.5">
-            <h2 id="add-source-title" className="text-base font-bold text-[var(--color-text-primary)]">
-              Add Evidence Source
-            </h2>
-            <p className="text-xs text-[var(--color-text-secondary)]">
-              Ingest research to build shared evidence memory with chunk embeddings.
-            </p>
-          </div>
+        <div className="flex items-center justify-between px-6 pt-5 pb-3">
+          <h2 id="add-source-title" className="text-sm font-semibold tracking-tight">
+            Add Reference Source
+          </h2>
           <button
             type="button"
             onClick={onClose}
             disabled={isSubmitting}
-            aria-label="Close modal"
-            className="p-1 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-card)] transition-colors disabled:opacity-50 cursor-pointer"
+            aria-label="Close dialog"
+            className="p-1 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-secondary)] transition-colors cursor-pointer"
           >
-            ✕
+            <XIcon className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Tab Selector */}
-        <div className="flex items-center space-x-1 p-1 bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg text-xs" role="tablist">
+        {/* Modal Tabs */}
+        <div className="flex border-b border-[var(--color-border)] px-6 gap-6 text-xs">
           <button
             type="button"
-            role="tab"
-            aria-selected={activeTab === "pdf"}
-            onClick={() => {
-              setActiveTab("pdf");
-              setSubmitError(null);
-            }}
-            className={`flex-1 py-1.5 px-3 rounded-md font-medium transition-colors cursor-pointer ${
+            onClick={() => setActiveTab("pdf")}
+            className={`py-2.5 font-medium border-b-2 transition-colors cursor-pointer flex items-center space-x-1.5 ${
               activeTab === "pdf"
-                ? "bg-[var(--color-primary)] text-white shadow-xs"
-                : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                ? "border-[var(--color-primary)] text-[var(--color-text-primary)]"
+                : "border-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
             }`}
           >
-            📄 PDF Upload
+            <FileTextIcon className="w-3.5 h-3.5" />
+            <span>PDF Document</span>
           </button>
           <button
             type="button"
-            role="tab"
-            aria-selected={activeTab === "url"}
-            onClick={() => {
-              setActiveTab("url");
-              setSubmitError(null);
-            }}
-            className={`flex-1 py-1.5 px-3 rounded-md font-medium transition-colors cursor-pointer ${
+            onClick={() => setActiveTab("url")}
+            className={`py-2.5 font-medium border-b-2 transition-colors cursor-pointer flex items-center space-x-1.5 ${
               activeTab === "url"
-                ? "bg-[var(--color-primary)] text-white shadow-xs"
-                : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                ? "border-[var(--color-primary)] text-[var(--color-text-primary)]"
+                : "border-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
             }`}
           >
-            🌐 Web Article
+            <GlobeIcon className="w-3.5 h-3.5" />
+            <span>Web Article</span>
           </button>
           <button
             type="button"
-            role="tab"
-            aria-selected={activeTab === "text"}
-            onClick={() => {
-              setActiveTab("text");
-              setSubmitError(null);
-            }}
-            className={`flex-1 py-1.5 px-3 rounded-md font-medium transition-colors cursor-pointer ${
+            onClick={() => setActiveTab("text")}
+            className={`py-2.5 font-medium border-b-2 transition-colors cursor-pointer flex items-center space-x-1.5 ${
               activeTab === "text"
-                ? "bg-[var(--color-primary)] text-white shadow-xs"
-                : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                ? "border-[var(--color-primary)] text-[var(--color-text-primary)]"
+                : "border-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
             }`}
           >
-            📝 Pasted Text
+            <span>Pasted Text</span>
           </button>
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {/* TAB 1: PDF */}
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 text-xs">
+          {submitError && (
+            <div className="p-3 bg-[var(--color-error-soft)] border border-[var(--color-error)]/30 rounded-xl text-[var(--color-error)]">
+              {submitError}
+            </div>
+          )}
+
           {activeTab === "pdf" && (
-            <div className="space-y-3">
+            <div className="space-y-3.5">
               <div
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setIsDragOver(true);
-                }}
-                onDragLeave={() => setIsDragOver(false)}
                 onDrop={handleDrop}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
                 onClick={() => fileInputRef.current?.click()}
                 className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
                   isDragOver
-                    ? "border-[var(--color-primary)] bg-[var(--color-primary-soft)]/20"
+                    ? "border-[var(--color-primary)] bg-[var(--color-primary-soft)]"
                     : selectedFile
-                    ? "border-[var(--color-success)] bg-[var(--color-success-soft)]/30"
-                    : "border-[var(--color-border)] hover:border-[var(--color-border-hover)] bg-[var(--color-card)]/50"
+                      ? "border-[var(--color-success)] bg-[var(--color-success-soft)]"
+                      : "border-[var(--color-border)] hover:border-[var(--color-border-hover)] bg-[var(--color-surface-secondary)]/50"
                 }`}
               >
                 <input
@@ -314,192 +284,141 @@ export function AddSourceModal({
                   accept="application/pdf,.pdf"
                   className="hidden"
                   onChange={(e) => {
-                    if (e.target.files && e.target.files[0]) {
+                    if (e.target.files && e.target.files.length > 0) {
                       handleFileSelection(e.target.files[0]);
                     }
                   }}
                 />
-                <div className="space-y-2">
-                  <div className="w-10 h-10 mx-auto rounded-full bg-[var(--color-surface)] border border-[var(--color-border)] flex items-center justify-center text-base">
-                    {selectedFile ? "✓" : "📄"}
-                  </div>
+
+                <div className="space-y-1">
                   {selectedFile ? (
-                    <div>
-                      <p className="text-xs font-semibold text-[var(--color-text-primary)] truncate max-w-xs mx-auto">
-                        {selectedFile.name}
-                      </p>
-                      <p className="text-[11px] font-mono text-[var(--color-text-secondary)] mt-0.5">
-                        {formatBytes(selectedFile.size)} · Ready to ingest
-                      </p>
+                    <div className="flex items-center justify-center space-x-2 text-[var(--color-success)] font-medium">
+                      <CheckIcon className="w-4 h-4" />
+                      <span className="truncate max-w-xs">{selectedFile.name}</span>
+                      <span className="text-[10px] text-[var(--color-text-muted)]">
+                        ({formatBytes(selectedFile.size)})
+                      </span>
                     </div>
                   ) : (
-                    <div>
-                      <p className="text-xs font-semibold text-[var(--color-text-primary)]">
-                        Drag and drop your PDF here, or click to browse
+                    <>
+                      <FileTextIcon className="w-6 h-6 mx-auto text-[var(--color-text-muted)]" />
+                      <p className="font-medium text-[var(--color-text-primary)]">
+                        Drop your research PDF here, or click to browse
                       </p>
-                      <p className="text-[11px] text-[var(--color-text-muted)] mt-1">
-                        Maximum file size: 8 MB · Text-searchable PDFs only
+                      <p className="text-[11px] text-[var(--color-text-muted)]">
+                        Standard research papers and reports up to 8 MB
                       </p>
-                    </div>
+                    </>
                   )}
                 </div>
               </div>
 
-              {pdfError && (
-                <p className="text-xs text-[var(--color-error)] pl-1" role="alert">
-                  {pdfError}
-                </p>
-              )}
+              {pdfError && <p className="text-[var(--color-error)] text-[11px]">{pdfError}</p>}
 
               <div className="space-y-1">
-                <label htmlFor="pdf-title-input" className="text-xs font-semibold text-[var(--color-text-primary)]">
-                  Source Title (Optional)
+                <label className="text-[11px] font-medium text-[var(--color-text-secondary)]">
+                  Reference Title (optional)
                 </label>
                 <input
-                  id="pdf-title-input"
                   type="text"
                   value={pdfTitle}
                   onChange={(e) => setPdfTitle(e.target.value)}
-                  placeholder="Defaults to filename"
-                  maxLength={120}
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-primary)]"
+                  placeholder="Auto-detected from file name if blank"
+                  className="w-full px-3 py-2 text-xs rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] focus:bg-[var(--color-surface)] focus:border-[var(--color-primary)] transition-colors placeholder:text-[var(--color-text-muted)] text-[var(--color-text-primary)]"
                 />
               </div>
             </div>
           )}
 
-          {/* TAB 2: URL */}
           {activeTab === "url" && (
             <div className="space-y-3">
               <div className="space-y-1">
-                <label htmlFor="url-input" className="text-xs font-semibold text-[var(--color-text-primary)]">
-                  Public Article URL <span className="text-[var(--color-error)]">*</span>
+                <label className="text-[11px] font-medium text-[var(--color-text-secondary)]">
+                  Article URL
                 </label>
                 <input
-                  id="url-input"
                   type="url"
                   value={url}
                   onChange={(e) => {
                     setUrl(e.target.value);
                     setUrlError(null);
                   }}
-                  placeholder="https://example.com/research-paper"
-                  required
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-primary)] font-mono"
+                  placeholder="https://example.com/research-article"
+                  className="w-full px-3 py-2 text-xs rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] focus:bg-[var(--color-surface)] focus:border-[var(--color-primary)] transition-colors placeholder:text-[var(--color-text-muted)] text-[var(--color-text-primary)]"
                 />
-                {urlError ? (
-                  <p className="text-xs text-[var(--color-error)] pl-1" role="alert">
-                    {urlError}
-                  </p>
-                ) : (
-                  <p className="text-[11px] text-[var(--color-text-muted)] pl-1">
-                    Public web articles only. Private, local, or internal addresses are rejected for security.
-                  </p>
-                )}
               </div>
 
+              {urlError && <p className="text-[var(--color-error)] text-[11px]">{urlError}</p>}
+
               <div className="space-y-1">
-                <label htmlFor="url-title-input" className="text-xs font-semibold text-[var(--color-text-primary)]">
-                  Source Title (Optional)
+                <label className="text-[11px] font-medium text-[var(--color-text-secondary)]">
+                  Reference Title (optional)
                 </label>
                 <input
-                  id="url-title-input"
                   type="text"
                   value={urlTitle}
                   onChange={(e) => setUrlTitle(e.target.value)}
-                  placeholder="Defaults to extracted article title or URL"
-                  maxLength={120}
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-primary)]"
+                  placeholder="Auto-extracted from webpage title if blank"
+                  className="w-full px-3 py-2 text-xs rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] focus:bg-[var(--color-surface)] focus:border-[var(--color-primary)] transition-colors placeholder:text-[var(--color-text-muted)] text-[var(--color-text-primary)]"
                 />
               </div>
             </div>
           )}
 
-          {/* TAB 3: PASTED TEXT */}
           {activeTab === "text" && (
             <div className="space-y-3">
               <div className="space-y-1">
-                <label htmlFor="text-title-input" className="text-xs font-semibold text-[var(--color-text-primary)]">
-                  Document Title <span className="text-[var(--color-error)]">*</span>
+                <label className="text-[11px] font-medium text-[var(--color-text-secondary)]">
+                  Reference Title (optional)
                 </label>
                 <input
-                  id="text-title-input"
                   type="text"
                   value={pastedTitle}
-                  onChange={(e) => {
-                    setPastedTitle(e.target.value);
-                    setTextError(null);
-                  }}
-                  placeholder="e.g., Interview Transcript or Conference Notes"
-                  maxLength={100}
-                  required
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-primary)]"
+                  onChange={(e) => setPastedTitle(e.target.value)}
+                  placeholder="e.g. Expert Interview Transcript"
+                  className="w-full px-3 py-2 text-xs rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] focus:bg-[var(--color-surface)] focus:border-[var(--color-primary)] transition-colors placeholder:text-[var(--color-text-muted)] text-[var(--color-text-primary)]"
                 />
               </div>
 
               <div className="space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  <label htmlFor="pasted-content-input" className="font-semibold text-[var(--color-text-primary)]">
-                    Content Text <span className="text-[var(--color-error)]">*</span>
-                  </label>
-                  <span
-                    className={`font-mono text-[10px] ${
-                      pastedText.length < MIN_TEXT_CHARS || pastedText.length > MAX_TEXT_CHARS
-                        ? "text-[var(--color-warning)] font-semibold"
-                        : "text-[var(--color-text-muted)]"
-                    }`}
-                  >
-                    {pastedText.length.toLocaleString()} / {MAX_TEXT_CHARS.toLocaleString()} chars (min {MIN_TEXT_CHARS})
+                <div className="flex justify-between items-center text-[11px] text-[var(--color-text-secondary)]">
+                  <label className="font-medium">Raw Text / Notes</label>
+                  <span className={pastedText.length < MIN_TEXT_CHARS ? "text-[var(--color-warning)]" : "text-[var(--color-text-muted)]"}>
+                    {pastedText.length.toLocaleString()} / {MIN_TEXT_CHARS} min chars
                   </span>
                 </div>
                 <textarea
-                  id="pasted-content-input"
-                  rows={8}
                   value={pastedText}
                   onChange={(e) => {
                     setPastedText(e.target.value);
                     setTextError(null);
                   }}
-                  placeholder="Paste research text, transcripts, excerpts, or paper body here (minimum 500 characters)..."
-                  required
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-primary)] resize-y leading-relaxed"
+                  rows={6}
+                  placeholder="Paste research excerpts, findings, or notes here (min 500 characters)..."
+                  className="w-full px-3 py-2 text-xs rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-secondary)] focus:bg-[var(--color-surface)] focus:border-[var(--color-primary)] transition-colors placeholder:text-[var(--color-text-muted)] text-[var(--color-text-primary)] resize-none"
                 />
-                {textError && (
-                  <p className="text-xs text-[var(--color-error)] pl-1" role="alert">
-                    {textError}
-                  </p>
-                )}
               </div>
-            </div>
-          )}
 
-          {/* Submission Error Banner */}
-          {submitError && (
-            <div className="p-3 rounded-lg border border-[var(--color-error)] bg-[var(--color-error-soft)] text-xs text-[var(--color-error)] flex items-start space-x-2">
-              <span className="shrink-0 font-bold">✕</span>
-              <span>{submitError}</span>
+              {textError && <p className="text-[var(--color-error)] text-[11px]">{textError}</p>}
             </div>
           )}
 
           {/* Action Buttons */}
-          <div className="flex items-center justify-end space-x-2 pt-2 border-t border-[var(--color-border)]">
+          <div className="flex items-center justify-end space-x-2 pt-3 border-t border-[var(--color-border-subtle)]">
             <button
               type="button"
               onClick={onClose}
               disabled={isSubmitting}
-              className="px-3.5 py-2 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-card)] rounded-lg border border-transparent hover:border-[var(--color-border)] transition-colors disabled:opacity-50 cursor-pointer"
+              className="px-3.5 py-1.5 text-xs font-medium rounded-lg text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-secondary)] transition-colors cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isSubmitting}
-              className="px-4 py-2 text-xs font-semibold bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white rounded-lg shadow-xs transition-colors flex items-center space-x-1.5 cursor-pointer disabled:opacity-60"
+              className="px-4 py-1.5 text-xs font-medium rounded-lg bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] disabled:opacity-50 text-white transition-colors shadow-xs cursor-pointer"
             >
-              {isSubmitting && (
-                <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin inline-block" />
-              )}
-              <span>{isSubmitting ? "Ingesting..." : "Begin Ingestion"}</span>
+              {isSubmitting ? "Ingesting reference..." : "Add Reference"}
             </button>
           </div>
         </form>

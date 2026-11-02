@@ -50,3 +50,12 @@ class BriefRepo:
         stmt = select(Brief).where(Brief.project_id == project_id).order_by(Brief.created_at.desc())
         res = await self.session.execute(stmt)
         return res.scalars().all()
+
+    async def delete_referencing_source(self, project_id: str, source_id: str) -> int:
+        """Delete saved briefs that cite a source being removed from the project."""
+        briefs = await self.list_by_project(project_id)
+        matches = [brief for brief in briefs if source_id in (brief.source_ids or [])]
+        for brief in matches:
+            await self.session.delete(brief)
+        await self.session.flush()
+        return len(matches)

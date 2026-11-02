@@ -2,6 +2,7 @@
 
 import React from "react";
 import { ProjectSourceItem } from "@/lib/api/schemas";
+import { FileTextIcon, GlobeIcon, TrashIcon, PlusIcon, SparklesIcon } from "@/components/ui/Icons";
 
 export interface SourceListProps {
   sources: ProjectSourceItem[];
@@ -23,236 +24,223 @@ export function SourceList({
   function renderKindIcon(kind: string) {
     switch (kind.toLowerCase()) {
       case "pdf":
-        return (
-          <svg className="w-4 h-4 text-[var(--color-primary)]" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-          </svg>
-        );
+        return <FileTextIcon className="w-4 h-4 text-[var(--color-primary)]" />;
       case "url":
-        return (
-          <svg className="w-4 h-4 text-[var(--color-agent-analyst)]" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
-          </svg>
-        );
+        return <GlobeIcon className="w-4 h-4 text-[var(--color-agent-analyst)]" />;
       case "text":
-        return (
-          <svg className="w-4 h-4 text-[var(--color-agent-writer)]" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
-        );
+        return <FileTextIcon className="w-4 h-4 text-[var(--color-agent-writer)]" />;
       default:
-        return (
-          <svg className="w-4 h-4 text-[var(--color-text-secondary)]" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-          </svg>
-        );
+        return <FileTextIcon className="w-4 h-4 text-[var(--color-text-secondary)]" />;
     }
   }
 
-  // Calculate workspace totals from real backend data
-  const totalChunks = sources.reduce((acc, s) => acc + (s.chunkCount || 0), 0);
-  const totalClaims = sources.reduce((acc, s) => acc + (s.claimCount || 0), 0);
+  function getKindLabel(kind: string): string {
+    switch (kind.toLowerCase()) {
+      case "pdf":
+        return "PDF Document";
+      case "url":
+        return "Web Article";
+      case "text":
+        return "Pasted Notes";
+      default:
+        return kind.toUpperCase();
+    }
+  }
 
   if (sources.length === 0) {
     return (
-      <div className="border border-dashed border-[var(--color-border)] rounded-2xl bg-[var(--color-surface)]/60 p-8 sm:p-12 text-center space-y-8 animate-in fade-in duration-200">
+      <div className="border border-dashed border-[var(--color-border)] rounded-2xl bg-[var(--color-surface)] p-8 sm:p-12 text-center space-y-8 animate-in fade-in duration-150">
         <div className="max-w-md mx-auto space-y-2">
-          <div className="w-12 h-12 mx-auto rounded-full bg-[var(--color-card)] border border-[var(--color-border)] flex items-center justify-center text-xl text-[var(--color-primary)] shadow-xs">
-            ✦
+          <div className="w-10 h-10 mx-auto rounded-xl bg-[var(--color-surface-secondary)] border border-[var(--color-border)] flex items-center justify-center text-[var(--color-primary)]">
+            <PlusIcon className="w-5 h-5" />
           </div>
-          <h3 className="text-base font-bold text-[var(--color-text-primary)]">
-            No evidence sources in this workspace yet
+          <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
+            No reference sources collected yet
           </h3>
           <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
-            Ingest research to build shared evidence memory with 768-dim vector embeddings. AI agents will evaluate, cross-reference, and ground insights across your sources.
+            Add research papers, articles, or transcripts to ground your evidence synthesis.
           </p>
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={onOpenAddModal}
+              className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-medium bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white rounded-lg transition-colors shadow-xs cursor-pointer"
+            >
+              <PlusIcon className="w-3.5 h-3.5" />
+              <span>Add your first source</span>
+            </button>
+          </div>
         </div>
 
         {/* 3 Supported Modalities Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-3xl mx-auto text-left">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-2xl mx-auto text-left">
           {[
             {
               kind: "pdf",
               title: "PDF Documents",
-              desc: "Upload research papers and reports (up to 8 MB). Text is cleaned, headers removed, and paragraphs chunked into vector memory.",
+              desc: "Upload research papers and reports (up to 8 MB). Headings, text, and paragraphs are extracted into evidence memory.",
             },
             {
               kind: "url",
               title: "Web Articles",
-              desc: "Ingest public URLs. Extracted through safe server-side SSRF validation with DNS pinning and readable text parsing.",
+              desc: "Ingest articles via public URLs. Safe parsing extracts readable content without ads or scripts.",
             },
             {
               kind: "text",
-              title: "Pasted Text",
-              desc: "Paste transcripts, excerpts, or raw notes (500 to 400,000 chars) directly into evidence memory.",
+              title: "Pasted Notes",
+              desc: "Directly paste excerpts, meeting notes, or interview transcripts (500 to 400,000 characters).",
             },
           ].map((m) => (
             <div
               key={m.kind}
-              className="p-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] space-y-2 hover:border-[var(--color-primary)]/40 transition-colors"
+              onClick={onOpenAddModal}
+              className="p-4 rounded-xl border border-[var(--color-border)] hover:border-[var(--color-border-hover)] bg-[var(--color-surface-secondary)]/50 hover:bg-[var(--color-surface-secondary)] cursor-pointer transition-colors space-y-1.5"
             >
-              <div className="w-8 h-8 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] flex items-center justify-center">
+              <div className="flex items-center space-x-2 text-[var(--color-text-primary)] font-medium text-xs">
                 {renderKindIcon(m.kind)}
+                <span>{m.title}</span>
               </div>
-              <h4 className="text-xs font-bold text-[var(--color-text-primary)]">{m.title}</h4>
               <p className="text-[11px] text-[var(--color-text-secondary)] leading-relaxed">{m.desc}</p>
             </div>
           ))}
         </div>
-
-        <button
-          type="button"
-          onClick={onOpenAddModal}
-          className="inline-flex items-center space-x-2 px-4 py-2 text-xs font-semibold bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white rounded-lg shadow-xs transition-colors cursor-pointer"
-        >
-          <span className="font-bold leading-none">+</span>
-          <span>Add First Source</span>
-        </button>
       </div>
     );
   }
 
   return (
-    <div className="space-y-4 animate-in fade-in duration-150">
-      {/* Evidence Sources Header (Single primary Add Source action remains in project header) */}
+    <div className="space-y-4">
+      {/* Sources Header Bar */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)] font-mono">
-            Evidence Sources ({sources.length})
-          </h3>
-          <span className="text-[11px] font-mono text-[var(--color-text-secondary)]">
-            · {totalChunks} {totalChunks === 1 ? "chunk" : "chunks"} indexed
-            {totalClaims > 0 && ` · ${totalClaims} claims`}
-          </span>
+        <div className="text-xs text-[var(--color-text-muted)] font-medium">
+          {sources.length} {sources.length === 1 ? "reference" : "references"} in this workspace
         </div>
+        <button
+          type="button"
+          onClick={onOpenAddModal}
+          className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white rounded-lg shadow-xs transition-colors cursor-pointer"
+        >
+          <PlusIcon className="w-3.5 h-3.5" />
+          <span>Add Reference</span>
+        </button>
       </div>
 
-      <div className="divide-y divide-[var(--color-border)] rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] overflow-hidden shadow-2xs">
-        {sources.map((src) => (
-          <div
-            key={src.id}
-            className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[var(--color-surface)]/50 transition-colors"
-          >
-            {/* Left: Tag + Title + Metrics */}
-            <div className="space-y-1.5 min-w-0 flex-1">
-              <div className="flex items-center space-x-2.5">
-                <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-primary)] shrink-0">
-                  {src.tag}
-                </span>
-                <span className="shrink-0" title={src.kind.toUpperCase()}>
-                  {renderKindIcon(src.kind)}
-                </span>
-                <h4 className="text-xs font-bold text-[var(--color-text-primary)] truncate">
-                  {src.title}
-                </h4>
+      {/* Sources List Table */}
+      <div className="border border-[var(--color-border)] rounded-2xl bg-[var(--color-surface)] overflow-hidden divide-y divide-[var(--color-border-subtle)] shadow-[0_1px_3px_rgba(0,0,0,0.02)]">
+        {sources.map((s) => {
+          const isAnalyzed = s.stages?.analyzed;
+          const isCollected = s.stages?.collected;
+          const isCurrentlyAnalyzing = analyzingSourceId === s.id;
+
+          return (
+            <div
+              key={s.id}
+              className="group p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[var(--color-surface-secondary)]/40 transition-colors"
+            >
+              {/* Source Info */}
+              <div className="flex items-start space-x-3 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-[var(--color-surface-secondary)] border border-[var(--color-border)] flex items-center justify-center shrink-0 mt-0.5">
+                  {renderKindIcon(s.kind)}
+                </div>
+
+                <div className="min-w-0 space-y-1">
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => onInspectSource(s.id)}
+                      className="text-xs sm:text-sm font-medium text-[var(--color-text-primary)] hover:text-[var(--color-primary)] transition-colors text-left truncate cursor-pointer"
+                    >
+                      {s.title}
+                    </button>
+                    <span className="text-[10px] font-mono text-[var(--color-text-muted)] shrink-0">
+                      [{s.tag}]
+                    </span>
+                  </div>
+
+                  <div className="flex items-center space-x-3 text-[11px] text-[var(--color-text-muted)]">
+                    <span>{getKindLabel(s.kind)}</span>
+                    <span>·</span>
+                    <span>{s.chunkCount || 0} excerpts</span>
+                    {isAnalyzed && s.claimCount !== undefined && s.claimCount > 0 && (
+                      <>
+                        <span>·</span>
+                        <span className="text-[var(--color-text-secondary)] font-medium">
+                          {s.claimCount} {s.claimCount === 1 ? "claim" : "claims"}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-[var(--color-text-secondary)] font-mono pl-0.5">
-                <span className="truncate max-w-xs text-[var(--color-text-muted)]" title={src.origin}>
-                  {src.origin}
-                </span>
-                <span>·</span>
-                <span>
-                  {src.chunkCount} {src.chunkCount === 1 ? "chunk" : "chunks"}
-                </span>
-                <span>·</span>
-                <span>
-                  {src.claimCount} {src.claimCount === 1 ? "claim" : "claims"}
-                </span>
-              </div>
-
-              {src.lastError && (
-                <p className="text-[11px] text-[var(--color-error)] font-mono pl-0.5">
-                  Error: {src.lastError}
-                </p>
-              )}
-            </div>
-
-            {/* Right: Stages + Actions */}
-            <div className="flex items-center space-x-3 shrink-0 self-end sm:self-center">
-              {/* Stage Chips */}
-              <div className="flex items-center space-x-1.5 text-[10px] font-mono">
-                {src.stages.collected ? (
-                  <span className="px-2 py-0.5 rounded bg-[var(--color-success-soft)] text-[var(--color-success)] font-medium flex items-center space-x-1">
-                    <span>✓</span>
-                    <span>Collected</span>
+              {/* Status & Actions */}
+              <div className="flex items-center space-x-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-[var(--color-border-subtle)] justify-between sm:justify-end">
+                {/* Natural Language Status Pill */}
+                {isCurrentlyAnalyzing ? (
+                  <span className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-[var(--color-primary-soft)] text-[var(--color-primary)]">
+                    <SparklesIcon className="w-3 h-3 animate-spin" />
+                    <span>Analyzing...</span>
                   </span>
-                ) : (
-                  <span className="px-2 py-0.5 rounded bg-[var(--color-surface)] text-[var(--color-text-muted)] border border-[var(--color-border)]">
-                    Pending
-                  </span>
-                )}
-                {src.stages.analyzed ? (
-                  <span className="px-2 py-0.5 rounded bg-[var(--color-primary-soft)] text-[var(--color-primary)] font-medium flex items-center space-x-1">
-                    <span>✓</span>
-                    <span>Analyzed</span>
-                  </span>
-                ) : src.lastError ? (
-                  <span
-                    className="px-2 py-0.5 rounded bg-[var(--color-error-soft)] text-[var(--color-error)] font-medium flex items-center space-x-1 border border-[var(--color-error)]/20"
-                    title={`Analysis Error: ${src.lastError}`}
-                  >
-                    <span>✕</span>
-                    <span>Analysis Failed</span>
-                  </span>
-                ) : (
-                  <span className="px-2 py-0.5 rounded bg-[var(--color-surface)] text-[var(--color-text-muted)] border border-[var(--color-border)]">
-                    Unanalyzed
-                  </span>
-                )}
-                {src.stages.critiqued ? (
-                  <span className="px-2 py-0.5 rounded bg-[var(--color-warning-soft)] text-[var(--color-warning)] font-medium flex items-center space-x-1">
-                    <span>✓</span>
+                ) : !isCollected ? (
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center space-x-1.5 rounded-full bg-[var(--color-error-soft)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-error)]">
+                      <span>Collection incomplete</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={onOpenAddModal}
+                      title="Re-submit the same source to resume collection"
+                      className="inline-flex items-center space-x-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-surface-secondary)]"
+                    >
+                      <SparklesIcon className="h-3 w-3 text-[var(--color-warning)]" />
+                      <span>Re-add to retry</span>
+                    </button>
+                  </div>
+                ) : s.stages?.critiqued ? (
+                  <span className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-[var(--color-agent-critic)]/15 text-[var(--color-agent-critic)]">
+                    <span className="w-1.5 h-1.5 rounded-full bg-current" />
                     <span>Critiqued</span>
                   </span>
-                ) : (
-                  <span className="px-2 py-0.5 rounded bg-[var(--color-surface)] text-[var(--color-text-muted)] border border-[var(--color-border)]">
-                    Uncritiqued
+                ) : isAnalyzed ? (
+                  <span className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-[var(--color-success-soft)] text-[var(--color-success)]">
+                    <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                    <span>Analyzed</span>
                   </span>
-                )}
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex items-center space-x-1.5 pl-2 border-l border-[var(--color-border)]">
-                {/* Trigger / Retry Analysis CTA if collected but not analyzed */}
-                {src.stages.collected && !src.stages.analyzed && onTriggerAnalyze && (
+                ) : (
                   <button
                     type="button"
-                    disabled={analyzingSourceId === src.id}
-                    onClick={() => onTriggerAnalyze(src.id, src.title)}
-                    className="px-2.5 py-1 text-xs font-semibold text-[var(--color-primary)] hover:bg-[var(--color-primary-soft)] rounded-md border border-[var(--color-primary)]/40 transition-colors cursor-pointer disabled:opacity-50 flex items-center space-x-1"
+                    onClick={() => onTriggerAnalyze?.(s.id, s.title)}
+                    className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium border border-[var(--color-border)] bg-[var(--color-surface)] hover:bg-[var(--color-surface-secondary)] text-[var(--color-text-primary)] transition-colors shadow-xs cursor-pointer"
                   >
-                    {analyzingSourceId === src.id && (
-                      <span className="w-2.5 h-2.5 rounded-full border-2 border-[var(--color-primary)] border-t-transparent animate-spin" />
-                    )}
-                    <span>{src.lastError ? "Retry Analysis" : "Analyze"}</span>
+                    <SparklesIcon className="w-3 h-3 text-[var(--color-warning)]" />
+                    <span>{s.lastError ? "Retry analysis" : "Analyze"}</span>
                   </button>
                 )}
+
+                {/* Inspect Button */}
                 <button
                   type="button"
-                  onClick={() => onInspectSource(src.id)}
-                  aria-label={`Inspect ${src.title}`}
-                  className="px-2.5 py-1 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface)] rounded-md border border-[var(--color-border)] transition-colors cursor-pointer"
+                  onClick={() => onInspectSource(s.id)}
+                  className="px-2.5 py-1 text-[11px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-secondary)] rounded-lg transition-colors cursor-pointer"
                 >
                   Inspect
                 </button>
+
+                {/* Delete Button */}
                 <button
                   type="button"
-                  onClick={() => onRequestDeleteSource(src.id, src.title)}
-                  aria-label={`Delete source ${src.title}`}
-                  title="Delete Source"
-                  className="p-1.5 text-[var(--color-text-muted)] hover:text-[var(--color-error)] hover:bg-[var(--color-error-soft)] rounded-md transition-colors cursor-pointer"
+                  onClick={() => onRequestDeleteSource(s.id, s.title)}
+                  title="Delete reference"
+                  aria-label={`Delete ${s.title}`}
+                  className="p-1 text-[var(--color-text-muted)] hover:text-[var(--color-error)] hover:bg-[var(--color-error-soft)] rounded-md transition-colors cursor-pointer"
                 >
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
+                  <TrashIcon className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
 }
-

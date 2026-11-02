@@ -83,7 +83,7 @@ Response `200`:
 `lastError` and `activeJobs` are new in 0.2 (F15).
 
 ### `DELETE /api/projects/:projectId`
-Marks the project `deleting`, deletes its Qdrant points, then its PostgreSQL rows. Response `200`: `{ "deleted": 123 }` (number of deleted records across both stores). If the vector deletion fails, the response is `503 VECTOR_DB_ERROR` and the project remains hidden and is completed by retry or by reconcile; a repeated `DELETE` is safe.
+Marks the project `deleting`, deletes its Qdrant points, then its PostgreSQL rows. Response `200`: `{ "deleted": 123 }` (number of deleted records across both stores). If vector deletion fails, the response is `503 VECTOR_DB_ERROR`; the project remains hidden from other routes, and its owner can repeat DELETE to resume cleanup. No other route can access a deleting project.
 
 ### `POST /api/projects/:projectId/sources` (stream)
 Stage: `collect`. Accepts one of:
@@ -100,7 +100,7 @@ Streams events; the `result` event data:
 Errors: `LIMIT_REACHED`, `NO_TEXT`, `FETCH_BLOCKED`, `FETCH_FAILED`, `BAD_REQUEST`, `PAYLOAD_TOO_LARGE`, `UNSUPPORTED_MEDIA_TYPE`.
 
 ### `POST /api/projects/:projectId/sources/:sourceId/analyze` (stream)
-Stage: `analyze`. No body. Requires `stages.collected`. `result` data: `{ "claimCount": 7, "topics": ["..."] }`. Side effect: existing claims of the source and all verdicts that reference them are removed, and `stages.critiqued` becomes false.
+Stage: `analyze`. No body. Requires `stages.collected`. `result` data: `{ "sourceId": "src_...", "claimIds": ["clm_..."], "claimCount": 7, "topics": ["..."] }`. Each new claim includes a verbatim support excerpt validated against the text supplied to the Analyst and references deterministic source chunk IDs. Claims without a matching excerpt/chunk are omitted. Side effect: existing claims of the source and all verdicts that reference them are removed, and `stages.critiqued` becomes false.
 
 ### `POST /api/projects/:projectId/sources/:sourceId/critique` (stream)
 Stage: `critique`. No body. Requires `stages.analyzed`. `result` data:
@@ -110,10 +110,10 @@ Stage: `critique`. No body. Requires `stages.analyzed`. `result` data:
 ```
 
 ### `GET /api/projects/:projectId/sources/:sourceId`
-Returns `{ source, summary, claims: [...], verdicts: [...] }` for the source detail view.
+Returns `{ source, summary, claims: [...], verdicts: [...] }` for the source detail view. Each claim includes `evidenceQuote` (null for claims predating the provenance migration) and `evidenceChunkIds` (empty for pre-migration claims).
 
 ### `DELETE /api/projects/:projectId/sources/:sourceId` (new in 0.2; F16)
-Deletes the source with its text, claims and verdicts (and its Qdrant points). If a job for the source is running, the response is `409 JOB_ACTIVE` with message "A stage is still running for this source." Response `200`: `{ "deleted": true }`. The source's tag is not reused.
+Deletes the source with its text, claims, verdicts, and any saved briefs that cite it. PostgreSQL deletion commits first; Qdrant deletion follows. If a job for the source is running, the response is `409 JOB_ACTIVE` with message "A stage is still running for this source." Response `200`: `{ "deleted": true }`. The source's tag is not reused. If Qdrant cleanup fails, the response is retryable `503 VECTOR_DB_ERROR`; PostgreSQL rows are already gone and repeating DELETE with the same valid source ID retries project-scoped vector cleanup.
 
 ### `POST /api/projects/:projectId/ask` (stream)
 Body: `{ "question": string (5-500) }`. `result` data:
@@ -131,6 +131,7 @@ Body: `{ "question": string (5-500) }`. `result` data:
 
 ### `GET /api/projects/:projectId/briefs/:briefId`
 Returns a stored brief (same shape as the `ask` result).
+The brief record also stores an internal `_researchContext` reference snapshot (project, question, used sources/chunks/claims/verdicts, and relevant previous briefs). This internal field is excluded from API responses.
 
 ### `GET /api/jobs/:jobId` (new in 0.2)
 Returns `{ "jobId": "...", "projectId": "prj_...", "sourceId": "src_..." | null, "stage": "analyze", "status": "queued"|"running"|"succeeded"|"failed", "errorCode": null, "result": { } | null, "lastSeq": 12, "startedAt": "...", "finishedAt": "..." | null }`. Only the job's owner can read it.
@@ -196,7 +197,7 @@ collect -> analyze -> critique
 ## 6. Authentication, idempotency, jobs and recovery (new in 0.2)
 
 ### Authentication
-- Token verification, user mapping and ownership are described in `02-DESIGN-DOC.md` section 13.1. The identity provider is open (U1).
+- Token verification, user mapping and ownership are described in `02-DESIGN-DOC.md` section 13.1. Until an issuer/JWKS verifier is configured, JWT mode rejects bearer tokens with `401 UNAUTHENTICATED`; arbitrary token strings never create or select a user.
 - CORS: exact allowed origins from `CORS_ALLOWED_ORIGINS`; allowed headers include `Authorization`, `Content-Type`, `Idempotency-Key`; exposed headers include `X-Request-Id`, `X-Job-Id`, `Retry-After`.
 
 ### Idempotency and single-flight
@@ -205,7 +206,7 @@ collect -> analyze -> critique
 - Input hash: for uploads, the content hash of the file bytes; for URLs, the normalized URL; for text, the content hash; for stages, none beyond project, stage and source; for `ask`, the normalized question.
 
 ### Job states
-`queued` -> `running` -> `succeeded` | `failed`. In v1 the in-process runner moves a job from `queued` to `running` immediately. A running job holds a lease (`JOB_LEASE_S`) renewed every `JOB_HEARTBEAT_S`.
+`queued` -> `running` -> `succeeded` | `failed`. In v1 the in-process runner moves a job from `queued` to `running` immediately. A running job holds a lease (`JOB_LEASE_S`) renewed every `JOB_HEARTBEAT_S`; startup marks all persisted active jobs interrupted because jobs cannot survive process restart.
 
 Source stage state (visible in `stages` and `lastError`): `collected`, `analyzed`, `critiqued` booleans plus `lastError`. These are the user-facing processing states; job status is operational detail.
 
@@ -214,7 +215,7 @@ Source stage state (visible in `stages` and `lastError`): `collected`, `analyzed
 | Situation | Behavior |
 |---|---|
 | Client disconnects mid-stream | The job continues; the client re-attaches with the events endpoint |
-| API restarts or deploys mid-job | On startup a sweep marks running jobs with expired leases `failed` with `INTERRUPTED` and writes an `error` plus `stage_end` event; the UI shows "Retry stage" |
+| API restarts or deploys mid-job | On startup, persisted queued and running jobs from the prior in-process instance are marked `failed` with `INTERRUPTED`; an `error` and `stage_end` are persisted and source jobs receive `lastError=INTERRUPTED`. The UI shows "Retry stage" |
 | Graceful shutdown (SIGTERM) | Stop accepting new jobs, wait up to `SHUTDOWN_GRACE_S`, then mark remaining jobs `INTERRUPTED` |
 | Provider rate limit | Bounded backoff inside the stage, then `error` `LLM_QUOTA` with `retryAfterSeconds` when known |
 | Qdrant or PostgreSQL down | Stage fails with `VECTOR_DB_ERROR` or `DB_ERROR`; flags are only set after durable writes, so retry resumes safely |

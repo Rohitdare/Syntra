@@ -1,6 +1,6 @@
 # Agent Specifications
 
-Version 0.3 | Four agents, each a separate Python module under `apps/api/src/research_desk/agents/`. The Collector is deterministic code (it calls the embedding provider but not an LLM); the Analyst, Critic and Writer call an LLM through `LLMProvider.call()`. Storage is PostgreSQL (system of record) and Qdrant (vector memory); see `03-DATABASE-SCHEMA.md`. "Records" below means PostgreSQL rows and Qdrant points as that document assigns them.
+Version 0.4 | The approved product architecture has four agents, each a separate Python module under `apps/api/src/research_desk/agents/`. This is consistent across PRD 0.3, Design Doc 0.4, the build plan and this specification. A Stage 8 implementation brief refers to a fifth agent, but none is named or assigned a role in those original product documents. Resolve that mismatch in favor of the approved four-agent design: do not invent or implement a fifth agent unless the PRD and design are explicitly amended. The Collector is deterministic code (it calls the embedding provider but not an LLM); the Analyst, Critic and Writer call an LLM through `LLMProvider.call()`. Storage is PostgreSQL (system of record) and Qdrant (vector memory); see `03-DATABASE-SCHEMA.md`. "Records" below means PostgreSQL rows and Qdrant points as that document assigns them.
 
 ## Module contract (applies to every agent)
 
@@ -28,6 +28,17 @@ async def run(inp: <Name>Input, deps: AgentDeps, emit: Emit, ctx: CallContext) -
 | Analyst | `agents/analyst.py` | `AnalystInput`: project ID, source ID | `AnalystOutput`: `claimCount, topics` | Summarize one source and extract its claims |
 | Critic | `agents/critic.py` | `CriticInput`: project ID, source ID | `CriticOutput`: pairs judged and counts per label, `skippedExisting` | Compare the source's claims with claims from other sources and label each pair |
 | Writer | `agents/writer.py` | `WriterInput`: project ID, question | `WriterOutput`-based result including `briefId` and `legend` | Answer a question from retrieved evidence with validated citations |
+
+## Approved responsibility matrix
+
+| Agent | Purpose and input | Output and dependencies | Tools and persistence | Failure and handoff |
+|---|---|---|---|---|
+| Collector | Prepare one PDF, public URL, or pasted-text source for a project. Input includes validated project ID and one source payload. | Validated source ID/tag/title/count result. Uses extraction/chunking helpers, `EmbeddingProvider`, `ProjectRepo`, `SourceRepo`, and `VectorStore`; no LLM. | Writes source and cleaned text to PostgreSQL, deterministic chunk points to Qdrant, then marks collection complete. | Invalid input, blocked URL, parser, provider, or store errors leave flags incomplete and the job retryable. Persisted source/text/chunk IDs hand off to Analyst. |
+| Analyst | Extract a faithful summary and supported claims from one collected source. Input is project ID plus source ID. | Validated title/summary/topics and claims with a verbatim evidence quote; output includes persisted claim IDs. Uses `LLMProvider`, `EmbeddingProvider`, source/claim repositories, and `VectorStore`. | Writes claims (including exact excerpt and deterministic chunk IDs) to PostgreSQL, claim points to Qdrant, then sets analyzed flag. | Claims whose excerpt cannot be found in the text supplied to the model and resolved to stored source chunks are omitted. Provider/store failures leave the stage retryable. Persisted claims hand off to Critic and Writer. |
+| Critic | Evaluate likely relationships between claims in different analyzed sources. Input is project ID plus source ID. | Validated verdict counts. Uses `LLMProvider`, claim/source/verdict repositories, `VectorStore`, and project-scoped concurrency protection. | Writes deterministic, project-scoped verdicts to PostgreSQL; no new vector type. | Missing vectors never imply success; partial output leaves the stage incomplete and retryable. Persisted verdicts hand off to Writer and Insights. |
+| Writer | Answer one project research question from eligible persisted evidence. Input is project ID plus question. | Validated cited brief, disagreement/gap fields, and source legend. Uses `EmbeddingProvider`, `LLMProvider`, source/claim/verdict/brief repositories, and `VectorStore`. | Persists validated brief plus an internal Pydantic `ResearchContext` snapshot of source/chunk/claim/verdict/previous-brief IDs. | Provider, evidence, or citation failures write no brief. The persisted context and brief hand off to Ask history and later research turns. |
+
+The shared research context is persisted evidence, not inter-agent memory: PostgreSQL owns source, claim, verdict and brief records; deterministic chunk IDs resolve to the Qdrant index. The orchestrator starts one stage per job, while the browser chains Collector → Analyst → Critic. Writer runs on the separate Ask path after evidence exists. Agents do not call each other or pass unvalidated dictionaries.
 
 Rules for all agents:
 - The orchestrator (`orchestrator/pipeline.py`) is the only caller. It checks project ownership, creates the job, applies the stage timeout and passes `emit` (events) and `ctx` (user, project, job IDs for the usage ledger).
@@ -74,10 +85,10 @@ Global rules for all prompts:
 **Steps**
 1. Check the source belongs to the project and `stageCollected` is true. Read the cleaned text from `source_texts` (PostgreSQL). (Changed from earlier versions: the text no longer comes from joined chunk texts, so overlap duplication is gone.)
 2. If longer than `MAX_ANALYST_CHARS`, send the first 50,000 and last 30,000 characters with a note that the middle was omitted.
-3. One LLM call, JSON output (schema below).
-4. Embed the claim texts in one batch (`"document"` task type).
-5. Persist, in this order: PostgreSQL transaction that replaces the source's claims (up to `MAX_CLAIMS_PER_SOURCE`; verdicts referencing the old claims are removed by cascade), stores the summary and topics, updates `title` if the model produced a better one and the title was a filename, and sets `stageAnalyzed = false` and `stageCritiqued = false`; then upsert the `claim` points in Qdrant and prune higher indexes; then set `claimCount` and `stageAnalyzed = true`.
-6. Emit a `result` event `{ claimCount, topics }`.
+3. One LLM call, JSON output (schema below), including a verbatim supporting `evidenceQuote` for every claim.
+4. Verify each quote occurs in the exact text sent to the LLM, resolve it to deterministic stored chunk IDs using the same chunker settings, and omit claims without a matching passage. Embed accepted claim texts in one batch (`"document"` task type).
+5. Persist, in this order: PostgreSQL transaction that replaces the source's claims (up to `MAX_CLAIMS_PER_SOURCE`; verdicts referencing old claims are removed by cascade), stores evidence excerpts/chunk IDs, summary and topics, updates `title` when appropriate, and sets `stageAnalyzed = false` and `stageCritiqued = false`; then upsert claim points with the provenance metadata in Qdrant and prune higher indexes; then set `claimCount` and `stageAnalyzed = true`.
+6. Emit a `result` event `{ sourceId, claimIds, claimCount, topics }`.
 
 **System prompt**
 
@@ -91,6 +102,8 @@ Rules:
 - Each claim must be understandable on its own: name the subject and include the scope or conditions
   when they matter (dataset, population, method, year, setting).
 - Prefer findings, numbers, comparisons, and conclusions over background statements.
+- Keep topic labels concise: each must be 1–40 characters; use short labels, not sentences.
+- For each claim, provide `evidenceQuote`: one exact, contiguous 20-500 character excerpt copied from SOURCE TEXT that directly supports it. Do not paraphrase or combine distant passages. If no excerpt supports a claim, omit that claim.
 - Return at most {{MAX_CLAIMS}} claims, ranked by importance (5 = central finding).
 - If the text is thin, return fewer claims. Never invent claims.
 - Respond with JSON only, matching the schema.
@@ -114,6 +127,7 @@ SOURCE TEXT:
 class AnalystClaim(CamelModel):
     text: str = Field(min_length=20, max_length=400)
     importance: int = Field(ge=1, le=5)
+    evidence_quote: str = Field(min_length=20, max_length=500)  # JSON key: evidenceQuote
     page_hint: int | None = Field(default=None, ge=1)      # JSON key: pageHint
 
 class AnalystOutputSchema(CamelModel):                     # LLM output; the agent's own Output model is separate
@@ -121,6 +135,12 @@ class AnalystOutputSchema(CamelModel):                     # LLM output; the age
     summary: str = Field(min_length=40, max_length=1200)   # 3-5 sentences
     topics: list[Annotated[str, StringConstraints(max_length=40)]] = Field(min_length=1, max_length=5)
     claims: list[AnalystClaim] = Field(max_length=8)
+
+class AnalystOutput(CamelModel):
+    source_id: str
+    claim_ids: list[str]
+    claim_count: int
+    topics: list[str]
 ```
 
 ## 3. Critic (LLM, fast tier)
@@ -193,11 +213,11 @@ class CriticOutputSchema(CamelModel):
 
 **Steps**
 1. Embed the question with `embeddings.embed_texts([question], "query")`, then run Q4 (nearest chunks) and Q5 (nearest claims) in this project. Drop hits from sources that are missing or not at the required stage in PostgreSQL.
-2. Fetch conflicts (Q6) from PostgreSQL, preferring verdicts linked to retrieved claims.
-3. Build a context block. Map each source ID to its tag (`S1`, `S2`...) and give every snippet its tag. Include source titles in a legend.
-4. One LLM call (schema below).
-5. **Validate:** every `[S#]` tag in the output must exist in the legend. Remove or flag unknown tags. Reject output with zero valid citations and retry once.
-6. Upsert a `brief` row in PostgreSQL. Return the result (`05-API-SPEC.md` for the shape).
+2. Fetch conflicts (Q6) from PostgreSQL, keeping only `supports`, `contradicts`, and `nuances` verdicts linked to retrieved claims; cap them at `WRITER_MAX_CONFLICTS`. Validate both claim/source records and source tags, then add both eligible sources to the legend so the Writer can cite either side of a disagreement.
+3. Build a context block from retrieved chunks, claims and their validated excerpts. Map each source ID to its tag (`S1`, `S2`...) and give every snippet its tag. Include source titles in a legend.
+4. One LLM call through `LLMProvider` at the strong tier (schema below). Chunk, claim and conflict limits come from `WRITER_TOP_CHUNKS`, `WRITER_TOP_CLAIMS`, and `WRITER_MAX_CONFLICTS`.
+5. **Validate:** every `[S#]` tag in the answer and structured disagreement/gap fields must exist in the legend. Reject unknown tags, an uncited answer, or an answer over 350 words; retry once, then fail without persisting a brief.
+6. Before upserting the `brief`, acquire the project evidence-write advisory lock and confirm cited source records still exist with the same tags and update timestamps. Source deletion uses the same lock and removes briefs that cite the deleted source. Return a Pydantic `WriterOutput`; persist an internal Pydantic `ResearchContext` snapshot with project, question, source, chunk, claim, verdict, and relevant previous-brief IDs alongside the public brief JSON.
 
 **System prompt**
 
@@ -254,6 +274,24 @@ class WriterOutputSchema(CamelModel):
     answer_markdown: str = Field(min_length=30)             # JSON key: answerMarkdown
     disagreements: list[WriterDisagreement]
     gaps: str
+
+class WriterOutput(CamelModel):                           # validated job/API result
+    brief_id: str
+    question: str
+    title: str
+    answer_markdown: str
+    disagreements: list[WriterDisagreement]
+    gaps: str
+    legend: list[BriefLegendItem]
+
+class ResearchContext(CamelModel):                         # stored with brief, not returned
+    project_id: str
+    question: str
+    source_ids: list[str]
+    chunk_ids: list[str]
+    claim_ids: list[str]
+    verdict_ids: list[str]
+    previous_brief_ids: list[str]
 ```
 
 ## 5. Shared utilities
@@ -262,6 +300,7 @@ class WriterOutputSchema(CamelModel):
 - `orchestrator/events.py`: `Emit` helper and `EventSink` protocol that every agent receives, so trace output is uniform.
 - `agents/prompts.py`: prompt builders.
 - `core/schemas.py`: all Pydantic models above plus the API and event models; `CamelModel` base (camelCase aliases, `populate_by_name`).
+- `ResearchContext` is a Pydantic, ID-only context snapshot stored with Writer briefs; it does not create a fifth agent or send raw source data between agents.
 - `agents/citations.py` (Stage 6): citation-tag validator shared by the Writer and its tests.
 
 ## 6. Failure and retry summary

@@ -11,7 +11,7 @@ class CamelModel(BaseModel):
     model_config = ConfigDict(
         alias_generator=to_camel,
         populate_by_name=True,
-        extra="ignore",
+        extra="forbid",
     )
 
 
@@ -183,6 +183,8 @@ class ClaimItem(CamelModel):
     text: str
     importance: int
     page_hint: int | None = None
+    evidence_quote: str | None = None
+    evidence_chunk_ids: list[str] = Field(default_factory=list)
     created_at: datetime.datetime | str | None = None
 
 
@@ -202,6 +204,11 @@ class AnalystClaim(CamelModel):
     text: str = Field(min_length=20, max_length=400, description="Atomic, self-contained assertion")
     importance: int = Field(
         ge=1, le=5, description="Significance of finding: 5=central, 1=minor detail"
+    )
+    evidence_quote: str = Field(
+        min_length=20,
+        max_length=500,
+        description="Verbatim supporting excerpt copied from the source text",
     )
     page_hint: int | None = Field(
         default=None, ge=1, description="Approximate source page if available"
@@ -231,6 +238,8 @@ class AnalystInput(CamelModel):
 class AnalystOutput(CamelModel):
     """Result payload emitted at the conclusion of analysis."""
 
+    source_id: str
+    claim_ids: list[str] = Field(default_factory=list)
     claim_count: int
     topics: list[str]
 
@@ -287,6 +296,65 @@ class CriticOutput(CamelModel):
         ge=0,
         description="Count of candidate pairs skipped because already judged",
     )
+
+
+class AskRequest(CamelModel):
+    question: str = Field(min_length=5, max_length=500)
+
+
+class AskInput(CamelModel):
+    project_id: str
+    question: str = Field(min_length=5, max_length=1000)
+
+
+class WriterPosition(CamelModel):
+    tag: str = Field(pattern=r"^S\d+$")
+    position: str = Field(min_length=1, max_length=500)
+
+
+class WriterDisagreement(CamelModel):
+    topic: str = Field(min_length=1, max_length=200)
+    positions: list[WriterPosition] = Field(min_length=2, max_length=8)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class WriterOutputSchema(CamelModel):
+    title: str = Field(max_length=120)
+    answer_markdown: str = Field(min_length=30, max_length=12000)
+    disagreements: list[WriterDisagreement] = Field(default_factory=list, max_length=12)
+    gaps: str = Field(max_length=2000)
+
+
+class ResearchContext(CamelModel):
+    """Validated project-scoped references used to produce a persisted brief."""
+
+    project_id: str
+    question: str
+    source_ids: list[str] = Field(default_factory=list)
+    chunk_ids: list[str] = Field(default_factory=list)
+    claim_ids: list[str] = Field(default_factory=list)
+    verdict_ids: list[str] = Field(default_factory=list)
+    previous_brief_ids: list[str] = Field(default_factory=list)
+
+
+class BriefLegendItem(CamelModel):
+    """A cited project source in a Writer result."""
+
+    tag: str = Field(pattern=r"^S\d+$")
+    source_id: str
+    title: str
+
+
+class WriterOutput(CamelModel):
+    """Validated Writer handoff and persisted brief response."""
+
+    brief_id: str
+    question: str
+    title: str
+    answer_markdown: str
+    disagreements: list[WriterDisagreement] = Field(default_factory=list)
+    gaps: str
+    legend: list[BriefLegendItem] = Field(default_factory=list)
 
 
 class JobStatusResponse(CamelModel):

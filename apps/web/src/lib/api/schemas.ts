@@ -101,11 +101,39 @@ export const ConflictItemSchema = z.object({
   b: VerdictClaimSideSchema,
 });
 
+export const BriefSummarySchema = z.object({
+  id: z.string(),
+  question: z.string(),
+  createdAt: z.string(),
+});
+
+export const BriefLegendItemSchema = z.object({
+  tag: z.string().regex(/^S\d+$/),
+  sourceId: z.string(),
+  title: z.string(),
+});
+
+export const BriefDisagreementSchema = z.object({
+  topic: z.string(),
+  positions: z.array(z.object({ tag: z.string().regex(/^S\d+$/), position: z.string() })),
+  note: z.string().nullable().optional(),
+});
+
+export const BriefResponseSchema = z.object({
+  briefId: z.string(),
+  question: z.string(),
+  title: z.string(),
+  answerMarkdown: z.string(),
+  disagreements: z.array(BriefDisagreementSchema).default([]),
+  gaps: z.string(),
+  legend: z.array(BriefLegendItemSchema).default([]),
+});
+
 export const ProjectDetailResponseSchema = z.object({
   project: ProjectHeaderSchema,
   sources: z.array(ProjectSourceItemSchema).default([]),
   conflicts: z.array(ConflictItemSchema).default([]),
-  briefs: z.array(z.record(z.string(), z.unknown())).default([]),
+  briefs: z.array(BriefSummarySchema).default([]),
   activeJobs: z.array(ActiveJobItemSchema).default([]),
 });
 
@@ -124,6 +152,8 @@ export const ClaimItemSchema = z.object({
   text: z.string(),
   importance: z.number(),
   pageHint: z.number().nullable().optional(),
+  evidenceQuote: z.string().nullable().optional(),
+  evidenceChunkIds: z.array(z.string()).optional(),
   createdAt: z.string().nullable().optional(),
 });
 
@@ -136,6 +166,8 @@ export const SourceDetailResponseSchema = z.object({
 });
 
 export const AnalystResultSchema = z.object({
+  sourceId: z.string(),
+  claimIds: z.array(z.string()).default([]),
   claimCount: z.number(),
   topics: z.array(z.string()),
 });
@@ -203,6 +235,8 @@ export type StreamEvent = z.infer<typeof StreamEventSchema>;
 export type VerdictLabel = z.infer<typeof VerdictLabelSchema>;
 export type VerdictClaimSide = z.infer<typeof VerdictClaimSideSchema>;
 export type ConflictItem = z.infer<typeof ConflictItemSchema>;
+export type BriefSummary = z.infer<typeof BriefSummarySchema>;
+export type BriefResponse = z.infer<typeof BriefResponseSchema>;
 export type CriticVerdict = z.infer<typeof CriticVerdictSchema>;
 export type CriticOutput = z.infer<typeof CriticOutputSchema>;
 export type CritiqueResult = z.infer<typeof CritiqueResultSchema>;

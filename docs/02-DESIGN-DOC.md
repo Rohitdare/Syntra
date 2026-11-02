@@ -1,6 +1,6 @@
 # Design Document: Research Desk
 
-Version 0.4 | Target architecture: Next.js frontend, FastAPI (Python) backend, PostgreSQL system of record, Qdrant evidence memory, Gemini provider. Read together with `03-DATABASE-SCHEMA.md`, `04-AGENT-SPECS.md` and `05-API-SPEC.md`. Nothing in this document is implemented yet; numbers marked "default" are starting values to tune, not measurements.
+Version 0.5 | Architecture and implementation notes for Next.js, FastAPI, PostgreSQL, Qdrant, and Gemini. Read together with `03-DATABASE-SCHEMA.md`, `04-AGENT-SPECS.md` and `05-API-SPEC.md`. Four agents are defined by the approved PRD and this design. The Stage 8 request's fifth-agent count has no matching role in the source specifications, so no fifth agent is invented; see `04-AGENT-SPECS.md` for the responsibility matrix. Defaults remain starting values, not measurements.
 
 ## 1. Overview
 
@@ -9,7 +9,7 @@ Research Desk is two independently deployable applications in one repository:
 - **`apps/web`:** Next.js (App Router), React, TypeScript, Tailwind. UI, session handling and frontend-only logic (NDJSON reader, trace store, Zod validation of API responses).
 - **`apps/api`:** Python and FastAPI. All API requests, authentication checks, validation, document processing, job orchestration, the four agents, provider adapters and streaming.
 
-The browser never talks to Gemini, PostgreSQL or Qdrant. The API runs four agents (one without an LLM, three LLM-backed). They share one evidence memory: PostgreSQL holds the authoritative records, and one Qdrant collection holds the searchable chunk and claim vectors. All secrets stay on the API server. Gemini provides both the LLM and the text embeddings.
+The browser never talks to Gemini, PostgreSQL or Qdrant. The API runs the four agents specified by the PRD: Collector (no LLM), Analyst, Critic and Writer. They share one evidence memory: PostgreSQL holds authoritative records and evidence references, while one Qdrant collection holds searchable chunk and claim vectors. The Analyst validates verbatim evidence excerpts and persists deterministic source chunk references with each claim. The Writer persists a validated, ID-only `ResearchContext` snapshot with each brief. Agents hand off through persisted records, not direct calls or unvalidated dictionaries. All secrets stay on the API server. Gemini provides both LLM and text embeddings.
 
 Design principles:
 1. **One memory, many agents.** Agents never call each other. They communicate by writing and reading persisted records (PostgreSQL and Qdrant), and the orchestrator is the only caller of agents.
@@ -40,6 +40,7 @@ flowchart LR
     RT["Routers: projects, sources, ask, jobs, health"]
     JOBS["Job service + JobRunner (in-process in v1)"]
     ORCH["Orchestrator: run_stage"]
+    CTX["Pydantic research context: project/source/chunk/claim/verdict/brief IDs"]
     COL["Collector - no LLM"]
     ANA["Analyst"]
     CRI["Critic"]
@@ -62,6 +63,7 @@ flowchart LR
   ORCH --> ANA
   ORCH --> CRI
   ORCH --> WRI
+  WRI --> CTX --> REPO
   COL --> ING
   COL --> EMBP
   ANA --> LLMP
@@ -151,10 +153,10 @@ sequenceDiagram
   W->>G: embed question (query task type)
   W->>D: search chunks + claims in project
   W->>P: load sources (tags, titles, stage flags); drop hits from unknown or incomplete sources
-  W->>P: query conflicts (contradicts, nuances)
+  W->>P: query relevant verdicts (supports, contradicts, nuances)
   W->>G: question + tagged context (one structured call)
   W->>W: validate citation tags
-  W->>P: upsert brief
+  W->>P: validate current evidence under project advisory lock; upsert brief
 ```
 
 ## 4. Components
@@ -293,7 +295,7 @@ Each stage endpoint responds with `application/x-ndjson`: one JSON object per li
 
 Streaming responses set `Cache-Control: no-store` and `X-Accel-Buffering: no`, and send a `heartbeat` event every `STREAM_HEARTBEAT_S` so proxies with idle timeouts do not cut the connection. Whether the chosen hosts buffer or cut streams is verified in spike S9, not assumed.
 
-The browser-side runner for adding a source: `collect -> analyze -> critique`. If a stage fails, the runner stops, shows the error, and offers "Retry stage". Retrying is safe because writes are idempotent and a duplicate submit attaches to the running job instead of starting another (single-flight). If the page is reloaded mid-stage, the runner finds the active job from the project response and re-attaches to its event stream.
+The browser-side runner for adding a source: `collect -> analyze -> critique`. If a stage fails, the runner stops, shows the error, and offers "Retry stage". Retrying is safe because writes are idempotent and a duplicate submit attaches to the running job instead of starting another (single-flight). If the page is reloaded mid-stage, the runner finds the active job from the project response, re-attaches to its event stream, and continues the chain after a recovered successful stage. At API startup, queued and running jobs from the prior in-process instance are marked failed with `INTERRUPTED` and receive terminal error events.
 
 ## 7. Configuration (starting defaults; tune on day 1)
 
@@ -433,7 +435,7 @@ Each item states the requirement and how it is met; "Stage" names where it is bu
 
 ### 13.1 Authentication and project ownership (Stage 1 backend skeleton, Stage 3 UI, Stage 7 hardening)
 - Every route except `GET /api/health` requires `Authorization: Bearer <token>`. FastAPI verifies the token (signature via the issuer's published keys, issuer, audience, expiry) and maps the subject to a row in `users`. The identity provider is undecided (U1).
-- `AUTH_MODE=dev` (a fixed local user, header-selectable) exists only for local development and tests; the app refuses to start with it unless `APP_ENV=local`.
+- `AUTH_MODE=dev` (a fixed local user) exists only for local development and tests; the app refuses to start with it unless `APP_ENV=local`. Until a real JWT verifier is configured, `AUTH_MODE=jwt` rejects every bearer token and never creates a user from an unverified token.
 - `get_owned_project(project_id, user)` loads the project only if `owner_id` matches; otherwise 404. Every project-scoped route, job and event stream uses it. Jobs also carry `user_id`, and the events endpoint checks job ownership.
 - Cross-user isolation has dedicated tests (metric M7).
 
